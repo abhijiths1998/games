@@ -195,7 +195,12 @@ static const char *FS_LIT =
     "  if(rH&&dl.x>=9.0){ if(az>0.1&&az<0.26) mark=vec3(0.75,0.55,0.08); if(az>4.5&&az<4.66) mark=vec3(0.75); }\n"
     "  if(rV&&dl.y>5.6&&dl.y<8.6&&fract(so.x/1.2)<0.5&&ax<4.5) mark=vec3(0.75);\n"
     "  if(rH&&dl.x>5.6&&dl.x<8.6&&fract(so.y/1.2)<0.5&&az<4.5) mark=vec3(0.75);\n"
-    "  if(dot(mark,mark)>0.0){ alb=mark*(0.7+0.3*n1); rough=0.6; }\n"
+    "  float lax=rV&&dl.y>=9.0?ax:(rH&&dl.x>=9.0?az:9.0);\n"
+    "  if(lax<9.0){ float tr=exp(-pow((abs(lax-2.2)-0.85)*3.2,2.0)); alb*=1.0-0.22*tr; rough=mix(rough,0.55,tr*0.6); }\n"
+    "  vec2 pc=floor(q/7.0); if(hash12(pc)>0.86){ alb*=0.78+0.12*hash12(pc+3.0); }\n"
+    "  float cr=vnoise(vec3(q*0.45,9.0)); if(abs(cr-0.5)<0.012&&vnoise(vec3(q*0.07,4.0))>0.55){ alb*=0.45; }\n"
+    "  if(lax<9.0){ float along=rV?q.y:q.x; vec2 mh=vec2(lax-2.2,mod(along,31.0)-15.5); if(length(mh)<0.45){ alb=vec3(0.09,0.085,0.08)*(0.7+0.6*step(0.5,fract((mh.x+mh.y)*4.0))); rough=0.45; met=0.6; } }\n"
+    "  if(dot(mark,mark)>0.0){ alb=mark*(0.7+0.3*n1)*(0.75+0.25*vnoise(vec3(q*2.0,1.0))); rough=0.6; }\n"
     " } else if((dl.x<9.0&&segV)||(dl.y<9.0&&segH)||(dl.x<9.0&&dl.y<9.0&&node)){\n"
     "  vec2 t=abs(fract(q/1.8)-0.5); float seam=smoothstep(0.46,0.49,max(t.x,t.y));\n"
     "  alb=vec3(0.33,0.32,0.30)*(0.85+0.2*n2)*(1.0-0.35*seam); rough=0.85;\n"
@@ -251,7 +256,7 @@ static const char *FS_LIT =
     "   n.z+=0.06*sin(q.y*0.11+t*0.9)+0.04*sin(q.y*0.25-q.x*0.19+t*1.6)+(vnoise(vec3(q*0.5+7.0,t*0.5))-0.5)*0.16;\n"
     "   N=normalize(n); alb=vec3(0.008,0.04,0.05)*(1.0-0.5*uNight); rough=0.04+uRain*0.1; met=0.0; }\n"
     " else if(pat==12){ alb*=0.7+0.3*step(0.12,fract(vPos.x*1.2+vPos.z*0.01)); rough=0.85; }\n"
-    " if(pat==10&&dist<60.0) {}\n"
+    " if(side&&(pat>=1&&pat<=3||pat==9)) alb*=mix(0.55,1.0,smoothstep(0.0,1.6,vPos.y));\n"
     " vec3 col=vec3(0.0);\n"
     " float sh=shadowAt(N); col+=shade(N,V,uLightDir,alb,met,rough,uLightCol)*sh;\n"
     " for(int i=0;i<uNumLights;i++){ vec3 d=uLightPos[i].xyz-vPos; float dd=length(d); float r=uLightPos[i].w;\n"
@@ -507,7 +512,35 @@ static void ipush(IBuf *b, m4 m, const Mat *mt, float seed) {
     b->n++;
 }
 static void inst(int mesh, m4 m, const Mat *mt) { ipush(&DI[mesh], m, mt, 0.5f); }
-static void inst_s(int mesh, m4 m, const Mat *mt, float seed) { ipush(&SI[mesh], m, mt, seed); }
+/* small static details (signs, street furniture) live in a tiled buffer and are only drawn near the camera */
+static IBuf SD[MS_N];
+static bool detail_mode;
+static void inst_s(int mesh, m4 m, const Mat *mt, float seed) { ipush(detail_mode ? &SD[mesh] : &SI[mesh], m, mt, seed); }
+#define DT_SIZE 128.0f
+#define DT_N 20
+#define DT_MIN (-480.0f)
+static int dt_start[MS_N][DT_N * DT_N + 1];
+static GLuint vao_sd[MS_N], vbo_sd[MS_N];
+static int dt_tile(const float *inst) {
+    int tx = (int)floorf((inst[12] - DT_MIN) / DT_SIZE), tz = (int)floorf((inst[14] - DT_MIN) / DT_SIZE);
+    tx = tx < 0 ? 0 : tx >= DT_N ? DT_N - 1 : tx;
+    tz = tz < 0 ? 0 : tz >= DT_N ? DT_N - 1 : tz;
+    return tz * DT_N + tx;
+}
+static void sort_details(int mesh) {
+    IBuf *b = &SD[mesh];
+    int cnt[DT_N * DT_N] = {0};
+    for (int i = 0; i < b->n; i++) cnt[dt_tile(b->d + i * IFL)]++;
+    dt_start[mesh][0] = 0;
+    for (int t = 0; t < DT_N * DT_N; t++) dt_start[mesh][t + 1] = dt_start[mesh][t] + cnt[t];
+    float *out = malloc(sizeof(float) * IFL * (size_t)(b->n ? b->n : 1));
+    int fill[DT_N * DT_N];
+    memcpy(fill, dt_start[mesh], sizeof(fill));
+    for (int i = 0; i < b->n; i++) memcpy(out + (fill[dt_tile(b->d + i * IFL)]++) * IFL, b->d + i * IFL, sizeof(float) * IFL);
+    free(b->d);
+    b->d = out;
+    b->cap = b->n * IFL;
+}
 
 static void setup_vao(GLuint vao, GLuint mvbo, GLuint ivbo) {
     glBindVertexArray(vao);
@@ -524,7 +557,16 @@ static void setup_vao(GLuint vao, GLuint mvbo, GLuint ivbo) {
     }
     glBindVertexArray(0);
 }
+static void setup_vao(GLuint vao, GLuint mvbo, GLuint ivbo);
 static void upload_static(void) {
+    for (int i = 0; i < MS_N; i++) {
+        sort_details(i);
+        glGenVertexArrays(1, &vao_sd[i]);
+        glGenBuffers(1, &vbo_sd[i]);
+        setup_vao(vao_sd[i], MESH[i].vbo, vbo_sd[i]);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_sd[i]);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)SD[i].n * IFL, SD[i].d, GL_STATIC_DRAW);
+    }
     for (int i = 0; i < MS_N; i++) {
         glBindBuffer(GL_ARRAY_BUFFER, vbo_s[i]);
         glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)SI[i].n * IFL, SI[i].d, GL_STATIC_DRAW);
@@ -538,7 +580,26 @@ static void upload_dynamic(void) {
         glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)DI[i].n * IFL, DI[i].d, GL_STREAM_DRAW);
     }
 }
+static void draw_details(float cx, float cz, float radius) {
+    int x0 = (int)floorf((cx - radius - DT_MIN) / DT_SIZE), x1 = (int)floorf((cx + radius - DT_MIN) / DT_SIZE);
+    int z0 = (int)floorf((cz - radius - DT_MIN) / DT_SIZE), z1 = (int)floorf((cz + radius - DT_MIN) / DT_SIZE);
+    x0 = x0 < 0 ? 0 : x0; z0 = z0 < 0 ? 0 : z0; x1 = x1 >= DT_N ? DT_N - 1 : x1; z1 = z1 >= DT_N ? DT_N - 1 : z1;
+    if (x0 > x1 || z0 > z1) return;
+    for (int m = 0; m < MS_N; m++) {
+        if (!SD[m].n) continue;
+        glBindVertexArray(vao_sd[m]);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_sd[m]);
+        for (int tz = z0; tz <= z1; tz++) {
+            int a = dt_start[m][tz * DT_N + x0], b = dt_start[m][tz * DT_N + x1 + 1];
+            if (b <= a) continue;
+            for (int k = 0; k < 7; k++) glVertexAttribPointer(2 + k, 4, GL_FLOAT, GL_FALSE, IFL * 4, (void *)(intptr_t)((size_t)a * IFL * 4 + (size_t)k * 16));
+            glDrawArraysInstanced(GL_TRIANGLES, 0, MESH[m].count, b - a);
+        }
+    }
+}
+static float detail_cx, detail_cz, detail_r = 400;
 static void draw_all_instances(void) {
+    draw_details(detail_cx, detail_cz, detail_r);
     for (int i = 0; i < MS_N; i++) {
         if (stat_count[i]) { glBindVertexArray(vao_s[i]); glDrawArraysInstanced(GL_TRIANGLES, 0, MESH[i].count, stat_count[i]); }
         if (DI[i].n) { glBindVertexArray(vao_d[i]); glDrawArraysInstanced(GL_TRIANGLES, 0, MESH[i].count, DI[i].n); }

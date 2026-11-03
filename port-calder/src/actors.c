@@ -1,7 +1,7 @@
 /* actors.c - particles, vehicles (physics, traffic AI, police AI), pedestrians, street props, the player. */
 
 /* ================================================================== shared game state */
-enum { ST_TITLE, ST_PLAY, ST_PAUSE, ST_MAP, ST_BUSTED, ST_WASTED };
+enum { ST_TITLE, ST_PLAY, ST_PAUSE, ST_MAP, ST_BUSTED, ST_WASTED, ST_SHOP };
 static struct {
     int state;
     float st, time;         /* time in state, total sim time */
@@ -127,7 +127,12 @@ typedef struct {
     float cop_t;
     bool siren, keep;
     float last_hit_by_player, idle_t;
+    float fuel;
+    bool owned;
+    int sig, sig_node;
 } Car;
+/* upgrades bought for the player's own car */
+static struct { int engine; bool brakes, tires, armor; } UPG;
 #define MAXCAR 90
 static Car car[MAXCAR];
 
@@ -139,10 +144,26 @@ static const v3 PAINT[] = {{0.55f, 0.04f, 0.04f}, {0.04f, 0.10f, 0.35f}, {0.75f,
                            {0.50f, 0.25f, 0.10f}, {0.80f, 0.55f, 0.10f}};
 static v3 rand_paint(void) { return PAINT[rand() % (int)(sizeof(PAINT) / sizeof(PAINT[0]))]; }
 
+static bool slot_used[MAXSLOT];
+static v3 focus_pos(void);
 static Car *alloc_car(void) {
-    for (int i = 0; i < MAXCAR; i++)
-        if (!car[i].on) { memset(&car[i], 0, sizeof(Car)); car[i].on = true; car[i].slot = -1; car[i].mission = -1; return &car[i]; }
-    return NULL;
+    int pick = -1;
+    for (int i = 0; i < MAXCAR; i++) if (!car[i].on) { pick = i; break; }
+    if (pick < 0) { /* full: recycle the farthest ordinary car */
+        float best = -1;
+        v3 fp = focus_pos();
+        for (int i = 0; i < MAXCAR; i++) {
+            Car *c = &car[i];
+            if (c->driver == DRV_PLAYER || c->owned || c->keep || c->mission >= 0) continue;
+            float d = dist2d(c->pos, fp);
+            if (d > best) { best = d; pick = i; }
+        }
+        if (pick < 0) return NULL;
+        if (car[pick].slot >= 0) slot_used[car[pick].slot] = false;
+    }
+    memset(&car[pick], 0, sizeof(Car));
+    car[pick].on = true; car[pick].slot = -1; car[pick].mission = -1;
+    return &car[pick];
 }
 static Car *spawn_car(int model, v3 pos, float yaw, int driver) {
     Car *c = alloc_car();
@@ -155,6 +176,8 @@ static Car *spawn_car(int model, v3 pos, float yaw, int driver) {
     c->hp = SPEC[model].hp;
     c->col = model == VM_TAXI ? V(0.85f, 0.62f, 0.05f) : model == VM_POLICE ? V(0.9f, 0.9f, 0.9f) : model == VM_BUS ? V(0.15f, 0.35f, 0.55f) : rand_paint();
     c->cruise = 11 + frand() * 4;
+    c->fuel = 0.3f + frand() * 0.6f;
+    c->sig_node = -1;
     return c;
 }
 
@@ -230,6 +253,8 @@ static void plan_turn(Car *c, int d2, float off) {
         v3 p = add(add(mul(a, (1 - t) * (1 - t)), mul(ctl, 2 * t * (1 - t))), mul(b, t * t));
         wp_push(c, p, -1);
     }
+    c->sig = d2 == d || d2 == (d + 2) % 4 ? 0 : d2 == (d + 1) % 4 ? 1 : -1;
+    c->sig_node = i * (NB + 1) + j;
     int i2 = i + DX[d2], j2 = j + DZ[d2];
     c->ni = i2; c->nj = j2; c->ndir = d2;
     wp_push(c, lane_pt(i, j, d2, PITCH * 0.5f, off), -1);
@@ -260,20 +285,30 @@ static void car_physics(Car *c, float dt) {
     car_axes(c, &f, &r);
     float vf = dot(c->vel, f), vr = dot(c->vel, r);
     bool dead = c->wrecked || c->sunk;
-    float thr = dead ? 0 : c->thr, brk = dead ? 0.6f : c->brk;
-    float grip = S->grip;
+    if (c->driver == DRV_PLAYER && !dead) {
+        c->fuel -= dt * (0.00006f + 0.0008f * c->thr) * (S->engine == 2 ? 1.3f : S->engine == 1 ? 1.15f : 1.0f);
+        if (c->fuel < 0) c->fuel = 0;
+    }
+    float thr = dead || (c->driver == DRV_PLAYER && c->fuel <= 0) ? 0 : c->thr, brk = dead ? 0.6f : c->brk;
+    float grip = S->grip, accel = S->accel, vmax = S->vmax, bdec = 18;
+    if (c->owned) {
+        accel *= 1 + 0.13f * UPG.engine;
+        vmax *= 1 + 0.07f * UPG.engine;
+        if (UPG.tires) grip *= 1.18f;
+        if (UPG.brakes) bdec *= 1.35f;
+    }
     if (!c->airborne) {
         if (thr > 0) {
             if (vf < -0.5f) vf += 16 * thr * dt;
-            else vf += S->accel * thr * (1 - clampf(vf / S->vmax, 0, 1) * clampf(vf / S->vmax, 0, 1)) * dt;
+            else vf += accel * thr * (1 - clampf(vf / vmax, 0, 1) * clampf(vf / vmax, 0, 1)) * dt;
         }
         if (brk > 0) {
-            if (vf > 0.5f) vf -= 18 * brk * dt;
-            else vf -= S->accel * 0.6f * brk * (vf > -11 ? 1 : 0) * dt;
+            if (vf > 0.5f) vf -= bdec * brk * dt;
+            else vf -= accel * 0.6f * brk * (vf > -11 ? 1 : 0) * dt;
         }
         if (c->hb) { grip *= 0.22f; vf -= vf * 0.9f * dt; }
         vf -= vf * (0.05f + fabsf(vf) * 0.0025f) * dt;
-        if (thr == 0 && brk == 0) vf -= (vf > 0 ? 1 : -1) * fminf(fabsf(vf), 1.5f * dt);
+        if (thr == 0 && brk == 0) vf -= (vf > 0 ? 1 : -1) * fminf(fabsf(vf), (c->driver == DRV_PLAYER ? 2.6f : 1.5f) * dt);
         vr *= expf(-grip * dt);
         float sp = fabsf(vf);
         float steer_max = S->steer / (1 + sp / 22);
@@ -369,7 +404,7 @@ static void car_physics(Car *c, float dt) {
 }
 
 /* ================================================================== pedestrians */
-enum { PS_WALK, PS_CROSS, PS_FLEE, PS_DOWN, PS_RETURN, PS_HAIL, PS_COP, PS_IDLE };
+enum { PS_WALK, PS_CROSS, PS_FLEE, PS_DOWN, PS_RETURN, PS_HAIL, PS_COP, PS_IDLE, PS_WAITX };
 typedef struct {
     bool on;
     int state;
@@ -381,7 +416,8 @@ typedef struct {
     v3 shirt, pants, skin, hair;
     float h, spin, tumble;
     bool cop;
-    int fare;
+    int fare, xnode, xaxis;
+    float wait_t;
 } Ped;
 #define MAXPED 110
 static Ped ped[MAXPED];
@@ -510,6 +546,8 @@ static struct {
     v3 air_from;
     bool air_ramp;
     int air_ramp_id;
+    float stamina, energy_t, law_cool;
+    bool tired, in_node;
 } PL;
 
 static void player_hurt(float dmg, v3 from) {
@@ -526,6 +564,7 @@ static void car_hit_effects(Car *c, v3 at, float impact, v3 n) {
     c->hit_cool = 0.25f;
     float dmg = impact > 7 ? (impact - 6) * 1.7f : 0;
     if (c->driver == DRV_PLAYER) dmg *= 0.6f;
+    if (c->owned && UPG.armor) dmg *= 0.5f;
     c->hp -= dmg;
     audio_play(impact > 11 ? SFX_CRASH_HEAVY : SFX_CRASH_LIGHT, at.x, at.y + 0.5f, at.z, clampf(impact / 18, 0.25f, 1), 0.85f + frand() * 0.3f);
     if (impact > 9) audio_play(SFX_GLASS, at.x, at.y + 0.8f, at.z, 0.6f, 1);
@@ -575,7 +614,7 @@ static bool spawn_traffic(float rmin, float rmax, bool allow_visible) {
         if (!allow_visible && in_view(at, 10) && dist2d(at, cam.pos) < 260) continue;
         if (car_near(at, 12)) continue;
         int dist = dist_blk[clampf(i, 0, NB - 1) == i ? i : NB - 1][j < NB ? j : NB - 1];
-        Car *c = spawn_car(pick_model(dist), at, 0, DRV_AI);
+        Car *c = spawn_car(frand() < 0.05f ? VM_POLICE : pick_model(dist), at, 0, DRV_AI);
         if (!c) return false;
         place_on_edge(c, i, j, dir, s);
         c->pos.y = 0;
@@ -587,6 +626,7 @@ static bool spawn_traffic(float rmin, float rmax, bool allow_visible) {
 static bool slot_used[MAXSLOT];
 static void spawn_parked(void) {
     v3 fp = focus_pos();
+    if (count_cars(DRV_NONE) > 24) return;
     for (int k = 0; k < 6; k++) {
         int s = rand() % (nslot ? nslot : 1);
         if (!nslot || slot_used[s]) continue;
@@ -758,7 +798,7 @@ static void drive_cop(Car *c, float dt) {
         target = add(tp, mul(player_vel(), clampf(d / 25, 0, 1.2f)));
         c->nwp = 0;
         float pv = len2d(player_vel());
-        if (pv < 9) want = fminf(want, sqrtf(fmaxf(0, 2 * 12 * (d - 5.4f))) + pv);
+        if (pv < 15) want = fminf(want, sqrtf(fmaxf(0, 2 * 12 * (d - 5.4f))) + pv * 0.8f);
     } else {
         if (c->nwp == 0 || len2d(sub(c->wp[0], c->pos)) < 9) {
             int i, j;
@@ -865,7 +905,11 @@ static void update_peds(float dt) {
                     if (nbi >= 0 && nbj >= 0 && nbi < NB && nbj < NB) {
                         /* the matching corner of the neighbour block is mirrored across the road */
                         int mc = pick == 0 ? (ci == 0 ? 1 : ci == 1 ? 0 : ci == 2 ? 3 : 2) : (ci == 0 ? 3 : ci == 3 ? 0 : ci == 1 ? 2 : 1);
-                        p->state = PS_CROSS;
+                        int cn[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+                        p->xnode = (p->bi + cn[ci][0]) * (NB + 1) + (p->bj + cn[ci][1]);
+                        p->xaxis = pick == 0 ? 1 : 0;
+                        p->wait_t = 0;
+                        p->state = PS_WAITX;
                         p->bi = nbi; p->bj = nbj;
                         p->s = mc * L;
                         p->target = perim_pt(nbi, nbj, p->s);
@@ -873,6 +917,23 @@ static void update_peds(float dt) {
                 }
             }
             if (p->timer > 0) p->timer -= dt;
+            break;
+        }
+        case PS_WAITX: {
+            /* wait at the kerb for the traffic on the road being crossed to get a red light */
+            v3 mid = mul(add(p->pos, p->target), 0.5f);
+            int ni = p->xnode / (NB + 1), nj = p->xnode % (NB + 1);
+            bool ok;
+            if (!on_road(mid.x, mid.z, 0)) ok = true;
+            else if (node_degree(ni, nj) >= 3) ok = light_state(ni, nj, p->xaxis) == 2;
+            else {
+                ok = true;
+                for (int k = 0; k < MAXCAR && ok; k++)
+                    if (car[k].on && fabsf(car_speed(&car[k])) > 2 && dist2d(car[k].pos, mid) < 22) ok = false;
+            }
+            p->wait_t += dt;
+            p->yaw += wrap_pi(yaw_of(sub(p->target, p->pos)) - p->yaw) * fminf(1, dt * 5);
+            if (ok || p->wait_t > 35) p->state = PS_CROSS;
             break;
         }
         case PS_CROSS:
@@ -950,10 +1011,10 @@ static void update_peds(float dt) {
         p->pos.y = g;
         if (p->state == PS_FLEE || p->state == PS_COP || p->state == PS_RETURN) collide_circle(&p->pos, 0.3f, 1.7f, NULL);
         float sp = len2d(p->vel);
-        if (sp > 0.2f && p->state != PS_HAIL) p->yaw += wrap_pi(yaw_of(p->vel) - p->yaw) * fminf(1, dt * 8);
+        if (sp > 0.2f && p->state != PS_HAIL && p->state != PS_WAITX) p->yaw += wrap_pi(yaw_of(p->vel) - p->yaw) * fminf(1, dt * 8);
         p->anim += sp * dt * 2.2f;
         /* shy away from fast cars heading at them */
-        if (p->state == PS_WALK || p->state == PS_CROSS) {
+        if (p->state == PS_WALK || p->state == PS_CROSS || p->state == PS_WAITX) {
             for (int k = 0; k < MAXCAR; k++) {
                 Car *c = &car[k];
                 if (!c->on || fabsf(car_speed(c)) < 9) continue;
@@ -1168,7 +1229,7 @@ static void update_cars(float dt) {
         Car *c = &car[i];
         if (!c->on) continue;
         float d = dist2d(c->pos, fp);
-        bool keep = c->driver == DRV_PLAYER || i == PL.last_car || c->mission >= 0 || c->keep;
+        bool keep = c->driver == DRV_PLAYER || i == PL.last_car || c->mission >= 0 || c->keep || c->owned;
         if (c->driver == DRV_AI && fabsf(car_speed(c)) < 0.3f) c->idle_t += dt; else c->idle_t = 0;
         if (!keep && (d > 340 || (c->wrecked && c->wreck_t > 40 && d > 80) || (c->sunk && c->sink_t > 10) || (c->idle_t > 30 && d > 90 && !in_view(c->pos, 10)))) {
             if (c->slot >= 0) slot_used[c->slot] = false;

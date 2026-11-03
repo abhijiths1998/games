@@ -70,6 +70,8 @@ static void start_busted(void);
 static void update_wanted(float dt) {
     G.star_flash -= dt;
     if (G.stars == 0) { G.bust_t = 0; G.heli_t = 0; return; }
+    for (int i = 0; i < MAXCAR; i++)
+        if (car[i].on && car[i].model == VM_POLICE && car[i].driver == DRV_AI && !car[i].wrecked) { car[i].driver = DRV_COP; car[i].cop_state = CS_PURSUE; car[i].nwp = 0; car[i].siren = true; }
     int want = G.stars * 2 + (G.stars >= 4 ? 1 : 0);
     if (want > 9) want = 9;
     cop_spawn_t -= dt;
@@ -434,6 +436,213 @@ static void toggle_taxi(void) {
     message("ON DUTY - PICK UP THE FARE", 3);
 }
 
+
+/* ================================================================== shops */
+typedef struct { const char *name; v3 shirt, pants, hat; int price; bool cap; } Outfit;
+static const Outfit OUTFIT[] = {
+    {"CASUAL", {0.85f, 0.45f, 0.1f}, {0.12f, 0.14f, 0.22f}, {0.08f, 0.06f, 0.05f}, 0, false},
+    {"STREETWEAR", {0.12f, 0.12f, 0.14f}, {0.30f, 0.30f, 0.33f}, {0.8f, 0.1f, 0.1f}, 90, true},
+    {"BUSINESS SUIT", {0.12f, 0.13f, 0.18f}, {0.12f, 0.13f, 0.18f}, {0.08f, 0.06f, 0.05f}, 450, false},
+    {"BIKER LEATHER", {0.07f, 0.06f, 0.05f}, {0.08f, 0.10f, 0.18f}, {0.08f, 0.06f, 0.05f}, 260, false},
+    {"BEACH", {0.95f, 0.55f, 0.65f}, {0.20f, 0.55f, 0.75f}, {0.9f, 0.85f, 0.6f}, 45, true},
+    {"TRACKSUIT", {0.10f, 0.32f, 0.70f}, {0.10f, 0.32f, 0.70f}, {0.08f, 0.06f, 0.05f}, 70, false},
+    {"HI-VIS WORKER", {1.0f, 0.6f, 0.05f}, {0.20f, 0.22f, 0.30f}, {1.0f, 0.85f, 0.1f}, 55, true},
+};
+#define NOUTFIT ((int)(sizeof(OUTFIT) / sizeof(OUTFIT[0])))
+static int outfit;
+static unsigned outfits_owned = 1;
+static struct { int model; v3 col; } OWN = {VM_MUSCLE, {0.55f, 0.06f, 0.05f}};
+static const struct { int model, price; } DEALER_STOCK[] = {{VM_SEDAN, 4500}, {VM_PICKUP, 7000}, {VM_VAN, 7500}, {VM_TAXI, 9000}, {VM_MUSCLE, 16000}, {VM_SPORTS, 29000}};
+
+enum { IT_LEAVE, IT_HEAL, IT_ENERGY, IT_LOTTERY, IT_OUTFIT, IT_CAR, IT_ENGINE, IT_BRAKES, IT_TIRES, IT_ARMOR, IT_REPAIR, IT_PAINT, IT_FUEL };
+typedef struct { char label[40]; char desc[64]; int price, kind, arg; bool ok; } Item;
+static Item items[16];
+static int nitems, shop_sel, shop_cur = -1;
+static float shop_msg_t;
+static char shop_msg[80];
+static Car *own_car(void) {
+    for (int i = 0; i < MAXCAR; i++) if (car[i].on && car[i].owned && !car[i].wrecked && !car[i].sunk) return &car[i];
+    return NULL;
+}
+static void add_item(const char *label, int price, int kind, int arg, const char *desc, bool ok) {
+    if (nitems >= 16) return;
+    Item *it = &items[nitems++];
+    snprintf(it->label, sizeof(it->label), "%s", label);
+    snprintf(it->desc, sizeof(it->desc), "%s", desc);
+    it->price = price; it->kind = kind; it->arg = arg; it->ok = ok;
+}
+static void build_items(void) {
+    nitems = 0;
+    Shop *S = &shops[shop_cur];
+    Car *c = PL.car >= 0 ? &car[PL.car] : NULL;
+    char b[40], d[64];
+    switch (S->type) {
+    case SHOP_GAS:
+        if (c) {
+            float liters = (1 - c->fuel) * 55;
+            snprintf(b, sizeof(b), "FILL UP  %.0f L", liters);
+            add_item(b, (int)ceilf(liters * 1.75f), IT_FUEL, 0, "UNLEADED  $1.75 PER LITER", liters > 0.5f);
+            int rep = (int)((1 - c->hp / SPEC[c->model].hp) * 300);
+            if (rep > 0) add_item("QUICK PATCH-UP", rep, IT_REPAIR, 0, "BASIC REPAIRS AT THE PUMP", true);
+            break;
+        }
+        __attribute__((fallthrough)); /* the kiosk sells snacks to people on foot */
+    case SHOP_STORE:
+        add_item("BOTTLE OF WATER", 2, IT_HEAL, 10, "+10 HEALTH", true);
+        add_item("SANDWICH", 6, IT_HEAL, 30, "+30 HEALTH", true);
+        add_item("ENERGY DRINK", 4, IT_ENERGY, 60, "UNLIMITED SPRINT FOR 60 SECONDS", true);
+        add_item("FIRST AID KIT", 45, IT_HEAL, 100, "FULL HEALTH", true);
+        add_item("LOTTERY SCRATCH CARD", 5, IT_LOTTERY, 0, "WIN UP TO $5000", true);
+        break;
+    case SHOP_DINER:
+        add_item("COFFEE", 3, IT_ENERGY, 25, "+5 HEALTH, SPRINT BOOST 25 SECONDS", true);
+        add_item("MILKSHAKE", 5, IT_HEAL, 15, "+15 HEALTH", true);
+        add_item("BURGER MEAL", 12, IT_HEAL, 50, "+50 HEALTH", true);
+        add_item("FULL BREAKFAST", 18, IT_HEAL, 100, "FULL HEALTH", true);
+        break;
+    case SHOP_CLOTHES:
+        for (int k = 0; k < NOUTFIT; k++) {
+            bool own = outfits_owned & (1u << k);
+            snprintf(d, sizeof(d), "%s", k == outfit ? "WEARING NOW" : own ? "OWNED - CHANGE INTO IT" : "BUY AND WEAR");
+            add_item(OUTFIT[k].name, own ? 0 : OUTFIT[k].price, IT_OUTFIT, k, d, k != outfit);
+        }
+        break;
+    case SHOP_DEALER:
+        for (size_t k = 0; k < sizeof(DEALER_STOCK) / sizeof(DEALER_STOCK[0]); k++) {
+            const CarSpec *cs = &SPEC[DEALER_STOCK[k].model];
+            snprintf(d, sizeof(d), "TOP SPEED %d KM/H  - REPLACES YOUR CAR", (int)(cs->vmax * 3.6f));
+            add_item(cs->name, DEALER_STOCK[k].price, IT_CAR, DEALER_STOCK[k].model, d, true);
+        }
+        break;
+    case SHOP_AUTO: {
+        bool own = c && c->owned;
+        if (c) {
+            int rep = (int)((1 - c->hp / SPEC[c->model].hp) * 600);
+            add_item("FULL REPAIR", rep, IT_REPAIR, 0, rep > 0 ? "BODY AND ENGINE GOOD AS NEW" : "NOTHING TO FIX", rep > 0);
+            add_item("NEW PAINT JOB", 250, IT_PAINT, 0, "A FRESH RANDOM COLOR", true);
+        }
+        const char *why = own ? "" : "UPGRADES ARE FOR YOUR OWN CAR ONLY";
+        if (UPG.engine < 3) {
+            snprintf(b, sizeof(b), "ENGINE STAGE %d", UPG.engine + 1);
+            snprintf(d, sizeof(d), "%s", own ? "MORE POWER AND TOP SPEED" : why);
+            add_item(b, 2500 * (UPG.engine + 1), IT_ENGINE, 0, d, own);
+        }
+        if (!UPG.brakes) add_item("SPORT BRAKES", 1500, IT_BRAKES, 0, own ? "STOP 35 PERCENT HARDER" : why, own);
+        if (!UPG.tires) add_item("PERFORMANCE TIRES", 1800, IT_TIRES, 0, own ? "MORE GRIP IN CORNERS" : why, own);
+        if (!UPG.armor) add_item("REINFORCED BODY", 3500, IT_ARMOR, 0, own ? "HALVES CRASH DAMAGE" : why, own);
+        break;
+    }
+    }
+    add_item("LEAVE", 0, IT_LEAVE, 0, "", true);
+    if (shop_sel >= nitems) shop_sel = nitems - 1;
+}
+static void shop_say(const char *m) { snprintf(shop_msg, sizeof(shop_msg), "%s", m); shop_msg_t = 2.5f; }
+static void spawn_own_car(v3 at, float yaw) {
+    Car *c = spawn_car(OWN.model, at, yaw, DRV_NONE);
+    if (!c) return;
+    c->col = OWN.model == VM_TAXI ? c->col : OWN.col;
+    c->owned = true;
+    c->keep = true;
+    c->fuel = 1;
+}
+static void shop_buy(void) {
+    Item *it = &items[shop_sel];
+    if (it->kind == IT_LEAVE) { G.state = ST_PLAY; shop_cur = -1; return; }
+    if (!it->ok) { audio_play2d(SFX_UI, 0.6f, 0.7f); shop_say(it->desc[0] ? it->desc : "NOT AVAILABLE"); return; }
+    if (G.money < it->price) { audio_play2d(SFX_MISSION_FAIL, 0.5f, 1.4f); shop_say("NOT ENOUGH CASH"); return; }
+    G.money -= it->price;
+    Car *c = PL.car >= 0 ? &car[PL.car] : NULL;
+    char b[80];
+    switch (it->kind) {
+    case IT_HEAL: PL.hp = fminf(100, PL.hp + it->arg); shop_say(PL.hp >= 100 ? "YOU FEEL GREAT" : "THAT HIT THE SPOT"); break;
+    case IT_ENERGY: PL.energy_t = fmaxf(PL.energy_t, (float)it->arg); PL.stamina = 1; PL.hp = fminf(100, PL.hp + 5); shop_say("WIDE AWAKE"); break;
+    case IT_LOTTERY: {
+        float r = frand();
+        int win = r < 0.0025f ? 5000 : r < 0.02f ? 1000 : r < 0.12f ? 20 : r < 0.3f ? 5 : 0;
+        G.money += win;
+        if (win) snprintf(b, sizeof(b), "WINNER! +$%d", win); else snprintf(b, sizeof(b), "NO LUCK THIS TIME");
+        shop_say(b);
+        if (win >= 1000) audio_play2d(SFX_JUMP_BONUS, 0.9f, 1);
+        break;
+    }
+    case IT_OUTFIT: outfit = it->arg; outfits_owned |= 1u << it->arg; shop_say("LOOKING SHARP"); break;
+    case IT_CAR: {
+        Car *old = own_car();
+        if (old) { old->owned = false; old->keep = false; }
+        OWN.model = it->arg;
+        OWN.col = rand_paint();
+        UPG.engine = 0; UPG.brakes = UPG.tires = UPG.armor = false;
+        spawn_own_car(shops[shop_cur].spawn, 1.5708f);
+        snprintf(b, sizeof(b), "YOUR NEW %s IS PARKED OUTSIDE", SPEC[it->arg].name);
+        shop_say(b);
+        break;
+    }
+    case IT_ENGINE: UPG.engine++; shop_say("ENGINE UPGRADED"); break;
+    case IT_BRAKES: UPG.brakes = true; shop_say("SPORT BRAKES FITTED"); break;
+    case IT_TIRES: UPG.tires = true; shop_say("NEW TIRES FITTED"); break;
+    case IT_ARMOR: UPG.armor = true; shop_say("BODY REINFORCED"); break;
+    case IT_REPAIR: if (c) { c->hp = it->price > 0 && shops[shop_cur].type == SHOP_GAS ? fminf(SPEC[c->model].hp, c->hp + SPEC[c->model].hp * 0.5f) : SPEC[c->model].hp; c->fire_t = 0; } shop_say("ALL FIXED"); break;
+    case IT_PAINT: if (c) { c->col = rand_paint(); if (c->owned) OWN.col = c->col; } shop_say("FRESH PAINT"); break;
+    case IT_FUEL: if (c) c->fuel = 1; shop_say("TANK FULL"); break;
+    }
+    if (it->price > 0) audio_play2d(SFX_CASH, 0.8f, 1); else audio_play2d(SFX_UI, 0.7f, 1);
+    build_items();
+}
+static int shop_near(void) {
+    v3 pp = player_target_pos();
+    bool in_car = PL.car >= 0;
+    float sp = in_car ? fabsf(car_speed(&car[PL.car])) : 0;
+    for (int k = 0; k < nshop; k++) {
+        float d = dist2d(shops[k].door, pp);
+        if (in_car) { if (shops[k].drive_in && d < 6 && sp < 3) return k; }
+        else if (d < (shops[k].drive_in ? 4.0f : 2.6f)) return k;
+    }
+    return -1;
+}
+static bool try_open_shop(void) {
+    int k = shop_near();
+    if (k < 0) return false;
+    Shop *S = &shops[k];
+    char b[96];
+    if (!shop_open(S->type, G.tod)) { snprintf(b, sizeof(b), "%s IS CLOSED - OPENS %02d:00", S->name, (int)SHOP_OPEN[S->type]); message(b, 3); return true; }
+    if (G.stars > 0) { message("THEY WON'T SERVE YOU WITH THE COPS OUTSIDE", 3); return true; }
+    shop_cur = k;
+    shop_sel = 0;
+    G.state = ST_SHOP;
+    shop_msg_t = 0;
+    build_items();
+    audio_play2d(SFX_DOOR, 0.6f, 1.1f);
+    return true;
+}
+static void shop_input(int move, bool buy, bool leave) {
+    if (G.state != ST_SHOP) return;
+    if (leave) { G.state = ST_PLAY; shop_cur = -1; audio_play2d(SFX_DOOR, 0.6f, 1); return; }
+    if (move) { shop_sel = (shop_sel + move + nitems) % nitems; audio_play2d(SFX_UI, 0.4f, 1.2f); }
+    if (buy) shop_buy();
+}
+/* traffic laws: speeding and red lights only matter when a police officer sees it */
+static bool police_near(v3 p, float r) {
+    for (int i = 0; i < MAXCAR; i++)
+        if (car[i].on && car[i].model == VM_POLICE && !car[i].wrecked && (car[i].driver == DRV_AI || car[i].driver == DRV_COP) && dist2d(car[i].pos, p) < r) return true;
+    return false;
+}
+static void traffic_laws(Car *c, float dt) {
+    PL.law_cool -= dt;
+    int ni, nj;
+    nearest_node(c->pos, &ni, &nj);
+    v3 np = node_pos(ni, nj);
+    bool inside = fabsf(c->pos.x - np.x) < 5 && fabsf(c->pos.z - np.z) < 5 && node_degree(ni, nj) >= 3;
+    float sp = fabsf(car_speed(c));
+    if (G.stars == 0 && PL.law_cool <= 0) {
+        if (inside && !PL.in_node && sp > 4) {
+            int d = ((int)floorf(wrap_pi(c->yaw - 1.5708f) / 1.5708f + 0.5f) + 4) % 4;
+            if (light_state(ni, nj, d) == 2 && police_near(c->pos, 60)) { add_heat(1.0f); message("YOU RAN A RED LIGHT IN FRONT OF THE POLICE", 3); PL.law_cool = 15; }
+        }
+        if (sp > 25 && on_road(c->pos.x, c->pos.z, 0) && police_near(c->pos, 40)) { add_heat(1.0f); message("SPEEDING - THE POLICE CLOCKED YOU", 3); PL.law_cool = 15; }
+    }
+    PL.in_node = inside;
+}
+
 /* ================================================================== player */
 static void exit_car(void) {
     Car *c = &car[PL.car];
@@ -557,7 +766,10 @@ static void update_player(const Input *in, float dt) {
             PL.air_t = 0;
         }
         G.stat_dist += len2d(c->vel) * dt;
-        if (in->enter && fabsf(car_speed(c)) < 7) exit_car();
+        traffic_laws(c, dt);
+        if (c->fuel < 0.12f && c->fuel > 0 && G.help_t <= 0) { snprintf(G.help, sizeof(G.help), c->fuel < 0.03f ? "ALMOST OUT OF FUEL!" : "LOW FUEL - FIND A GAS STATION (G)"); G.help_t = 0.2f; }
+        if (c->fuel <= 0 && G.help_t <= 0) { snprintf(G.help, sizeof(G.help), "OUT OF FUEL"); G.help_t = 0.2f; }
+        if (in->enter && !try_open_shop() && fabsf(car_speed(c)) < 7) exit_car();
         return;
     }
     /* on foot */
@@ -577,8 +789,15 @@ static void update_player(const Input *in, float dt) {
     v3 wish = add(mul(cf, in->fwd), mul(cr, in->side));
     float wl = len2d(wish);
     if (wl > 1) wish = mul(wish, 1 / wl);
-    PL.sprint = in->sprint;
-    float spd = water ? 2.6f : in->sprint ? 7.2f : 4.4f;
+    /* stamina: sprinting tires you out unless you had an energy drink */
+    PL.energy_t = fmaxf(0, PL.energy_t - dt);
+    bool moving = len2d(PL.vel) > 1;
+    if (PL.stamina <= 0.02f) PL.tired = true;
+    if (PL.stamina > 0.35f) PL.tired = false;
+    PL.sprint = in->sprint && !PL.tired && moving;
+    if (PL.sprint && PL.energy_t <= 0) PL.stamina = fmaxf(0, PL.stamina - dt / 9);
+    else if (!PL.sprint) PL.stamina = fminf(1, PL.stamina + dt / 6);
+    float spd = water ? 2.6f : PL.sprint ? 7.2f : PL.tired && in->sprint ? 3.6f : 4.4f;
     v3 target = mul(wish, spd);
     float acc = PL.ground || water ? 14 : 3;
     PL.vel.x += (target.x - PL.vel.x) * fminf(1, acc * dt);
@@ -616,7 +835,7 @@ static void update_player(const Input *in, float dt) {
         if (l < 0.55f && l > 1e-4f) { PL.pos.x = q->pos.x + d.x / l * 0.55f; PL.pos.z = q->pos.z + d.z / l * 0.55f; }
     }
     PL.anim += len2d(PL.vel) * dt * 2.2f;
-    if (in->enter) enter_nearest_car();
+    if (in->enter && !try_open_shop()) enter_nearest_car();
     /* health regenerates slowly */
     PL.regen_t -= dt;
     if (PL.regen_t <= 0 && PL.hp < 100) PL.hp = fminf(100, PL.hp + dt * 1.5f);
@@ -668,6 +887,11 @@ static void respawn_at(int type) {
     G.state = ST_PLAY;
     G.st = 0;
     G.tod = fmodf(G.tod + 2, 24);
+    if (!own_car()) {
+        int sk = nearest_poi(POI_SAFE, V(0, 0, 0));
+        spawn_own_car(add(poi[sk].pos, V(6, 0, -3.2f)), 1.5708f);
+        message("YOUR CAR HAS BEEN TOWED TO THE SAFEHOUSE", 4);
+    }
 }
 
 /* ================================================================== save / load */
@@ -678,6 +902,7 @@ void save_game(void) {
     if (!f) { message("COULD NOT SAVE", 3); return; }
     fprintf(f, "portcalder 1\nmoney %d\ntapes %u\njumps %u\ndeliveries %d\nfares %d\ntod %.3f\ntime %.1f\n", G.money, tapes_found, jumps_done, deliveries, fares, G.tod, play_time);
     for (int r = 0; r < NRACE; r++) fprintf(f, "race %d %.3f\n", r, race_best[r]);
+    fprintf(f, "outfit %d\noutfits %u\ncar %d %.3f %.3f %.3f\nupg %d %d %d %d\n", outfit, outfits_owned, OWN.model, OWN.col.x, OWN.col.y, OWN.col.z, UPG.engine, UPG.brakes, UPG.tires, UPG.armor);
     fprintf(f, "sens %.5f\nfov %.1f\ninvert %d\nradio %d\npeds %d\ncars %d\nair %.2f\ndist %.0f\n", G.sens, G.fov_base, G.invert, G.radio, G.stat_peds, G.stat_cars, G.stat_air, G.stat_dist);
     fclose(f);
     bigtext("GAME SAVED", "HEALTH RESTORED", 3);
@@ -706,6 +931,10 @@ static void load_game(void) {
         else if (!strcmp(key, "cars") && fscanf(f, "%d", &iv) == 1) G.stat_cars = iv;
         else if (!strcmp(key, "air") && fscanf(f, "%f", &fv) == 1) G.stat_air = fv;
         else if (!strcmp(key, "dist") && fscanf(f, "%f", &fv) == 1) G.stat_dist = fv;
+        else if (!strcmp(key, "outfit") && fscanf(f, "%d", &iv) == 1) outfit = iv >= 0 && iv < NOUTFIT ? iv : 0;
+        else if (!strcmp(key, "outfits") && fscanf(f, "%u", &uv) == 1) outfits_owned = uv | 1u;
+        else if (!strcmp(key, "car")) { int m; float r, g, b2; if (fscanf(f, "%d %f %f %f", &m, &r, &g, &b2) == 4 && m >= 0 && m < VM_N && m != VM_POLICE && m != VM_BUS) { OWN.model = m; OWN.col = V(r, g, b2); } }
+        else if (!strcmp(key, "upg")) { int a, b2, c, d; if (fscanf(f, "%d %d %d %d", &a, &b2, &c, &d) == 4) { UPG.engine = a < 0 ? 0 : a > 3 ? 3 : a; UPG.brakes = b2; UPG.tires = c; UPG.armor = d; } }
     }
     fclose(f);
 }
@@ -832,6 +1061,13 @@ static void draw_map_contents(bool full, float t) {
             bool fl = fmodf(t * 4, 1) < 0.5f;
             map_blip(car[i].pos, br * 0.6f, fl ? V(1, 0.2f, 0.2f) : V(0.2f, 0.4f, 1), false, 0);
         }
+    for (int k = 0; k < nshop; k++) {
+        if (!full && dist2d(shops[k].door, MAPV.c) > view) continue;
+        v3 sc = SHOP_COL[shops[k].type];
+        if (!shop_open(shops[k].type, G.tod)) sc = mul(sc, 0.4f);
+        map_blip(shops[k].door, br * 0.85f, sc, false, SHOP_LETTER[shops[k].type]);
+    }
+    { Car *oc = own_car(); if (oc && full) map_blip(oc->pos, br * 0.7f, V(0.3f, 1, 1), false, 0); }
     if (mission_target(&tgt)) map_blip(tgt, br * 1.1f, V(1, 0.85f, 0.15f), !full, 0);
     /* player arrow */
     float px, py;
@@ -917,6 +1153,13 @@ static void draw_full_map(float t) {
         hrect(lx, yy, 9 * UI * 0.55f, 9 * UI * 0.55f, poi_color(k).x, poi_color(k).y, poi_color(k).z, 1);
         htext(names[k], lx + 14 * UI * 0.55f, yy + 1, UI * 0.45f, 1, 1, 1, 0.9f, 0);
     }
+    for (int k = 0; k < SHOP_N; k++) {
+        float yy = ly + (POI_N + k) * 16 * UI * 0.55f;
+        hrect(lx, yy, 9 * UI * 0.55f, 9 * UI * 0.55f, SHOP_COL[k].x, SHOP_COL[k].y, SHOP_COL[k].z, 1);
+        char lb[40];
+        snprintf(lb, sizeof(lb), "%s %02d-%02d", SHOP_KIND[k], (int)SHOP_OPEN[k], (int)SHOP_CLOSE[k]);
+        htext(SHOP_OPEN[k] == 0 && SHOP_CLOSE[k] == 24 ? SHOP_KIND[k] : lb, lx + 14 * UI * 0.55f, yy + 1, UI * 0.45f, 1, 1, 1, 0.9f, 0);
+    }
     htext("TAB - CLOSE", rw / 2.0f, rh - 18 * UI * 0.5f, UI * 0.5f, 0.8f, 0.8f, 0.8f, 0.9f, 1);
 }
 
@@ -956,6 +1199,9 @@ static void draw_hud(float t) {
     if (PL.car >= 0) {
         Car *c = &car[PL.car];
         draw_bar(rx - 130 * s, 124 * s, 130 * s, 5 * s, c->hp / SPEC[c->model].hp, V(1, 0.6f, 0.15f));
+        bool low = c->fuel < 0.12f && fmodf(t * 2, 1) < 0.5f;
+        draw_bar(rx - 130 * s, 135 * s, 130 * s, 5 * s, c->fuel, low ? V(1, 0.2f, 0.2f) : V(0.3f, 0.7f, 1));
+        htext("FUEL", rx - 136 * s, 134 * s, s * 0.9f, 0.7f, 0.85f, 1, 0.9f, 2);
     }
     /* bottom right: speed and vehicle */
     if (PL.car >= 0) {
@@ -1025,6 +1271,48 @@ static void draw_hud(float t) {
         float a = clampf(G.st - 0.5f, 0, 1);
         const char *w = G.state == ST_BUSTED ? "BUSTED" : "WASTED";
         htext(w, rw / 2.0f, rh * 0.42f, s * 6, G.state == ST_BUSTED ? 0.4f : 0.85f, G.state == ST_BUSTED ? 0.6f : 0.15f, G.state == ST_BUSTED ? 1 : 0.1f, a, 1);
+    }
+    if (PL.car < 0 && G.state == ST_PLAY && PL.stamina < 0.99f) draw_bar(rx - 130 * s, 124 * s, 130 * s, 4 * s, PL.stamina, PL.energy_t > 0 ? V(1, 0.9f, 0.3f) : PL.tired ? V(1, 0.3f, 0.2f) : V(0.9f, 0.9f, 0.9f));
+    /* prompt at shop doors */
+    if (G.state == ST_PLAY && G.help_t <= 0) {
+        int k = shop_near();
+        if (k >= 0) {
+            bool open = shop_open(shops[k].type, G.tod);
+            if (open) snprintf(b, sizeof(b), "F - %s %s", PL.car >= 0 && shops[k].type == SHOP_GAS ? "REFUEL AT" : "ENTER", shops[k].name);
+            else snprintf(b, sizeof(b), "%s - CLOSED UNTIL %02d:00", shops[k].name, (int)SHOP_OPEN[shops[k].type]);
+            float w = text_w(b, s * 1.1f) + 20 * s;
+            hrect(16 * s, 48 * s, w, 26 * s, 0, 0, 0, 0.6f);
+            htext(b, 26 * s, 57 * s, s * 1.1f, 1, 1, 1, 0.95f, 0);
+        }
+    }
+    if (G.state == ST_SHOP && shop_cur >= 0) {
+        Shop *S = &shops[shop_cur];
+        v3 col = SHOP_COL[S->type];
+        float pw = 640 * s, ph = (170 + nitems * 32) * s;
+        float px = rw / 2.0f - pw / 2, py = rh / 2.0f - ph / 2;
+        hrect(0, 0, (float)rw, (float)rh, 0, 0, 0, 0.35f);
+        hrect(px, py, pw, ph, 0.03f, 0.035f, 0.045f, 0.92f);
+        hrect(px, py, pw, 4 * s, col.x, col.y, col.z, 1);
+        htext(S->name, px + 24 * s, py + 20 * s, s * 2.4f, col.x, col.y, col.z, 1, 0);
+        snprintf(b, sizeof(b), "%s", SHOP_KIND[S->type]);
+        htext(b, px + 24 * s, py + 46 * s, s * 1.0f, 0.75f, 0.75f, 0.8f, 1, 0);
+        money_str(b, sizeof(b), G.money);
+        htext(b, px + pw - 24 * s, py + 22 * s, s * 2.0f, 0.45f, 1, 0.45f, 1, 2);
+        for (int k = 0; k < nitems; k++) {
+            float y = py + (84 + k * 32) * s;
+            bool sel = k == shop_sel;
+            if (sel) hrect(px + 12 * s, y - 8 * s, pw - 24 * s, 30 * s, col.x * 0.25f, col.y * 0.25f, col.z * 0.25f, 0.9f);
+            float a = items[k].ok ? 1 : 0.45f;
+            htext(items[k].label, px + 28 * s, y, s * 1.7f, sel ? 1 : 0.85f, sel ? 1 : 0.85f, sel ? 1 : 0.85f, a, 0);
+            if (items[k].kind != IT_LEAVE) {
+                if (items[k].price > 0) money_str(b, sizeof(b), items[k].price); else snprintf(b, sizeof(b), "FREE");
+                htext(b, px + pw - 28 * s, y, s * 1.7f, 1, 0.85f, 0.4f, a, 2);
+            }
+        }
+        float y = py + ph - 52 * s;
+        if (shop_msg_t > 0) htext(shop_msg, rw / 2.0f, y, s * 1.6f, 1, 1, 0.6f, clampf(shop_msg_t, 0, 1), 1);
+        else if (items[shop_sel].desc[0]) htext(items[shop_sel].desc, rw / 2.0f, y, s * 1.4f, 0.8f, 0.85f, 0.95f, 1, 1);
+        htext("W/S SELECT   ENTER BUY   ESC LEAVE", rw / 2.0f, py + ph - 24 * s, s * 1.2f, 0.6f, 0.6f, 0.65f, 1, 1);
     }
     if (G.state == ST_PAUSE) {
         hrect(0, 0, (float)rw, (float)rh, 0, 0, 0, 0.6f);

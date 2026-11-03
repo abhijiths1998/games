@@ -71,9 +71,14 @@ static void push_car(const Car *c, float t) {
     } else {
         bool low = c->model == VM_SPORTS;
         float cab_h = H - bh - clear;
+        float cz = low ? 0.25f : 0.1f, cl = L * (low ? 0.30f : 0.36f), ws = L * (low ? 0.2f : 0.15f), rs = L * (low ? 0.14f : 0.11f);
         part_box(M, V(0, clear + bh * 0.5f, 0), V(W, bh, L), &body);
-        part_box(M, V(0, clear + bh + cab_h * 0.48f, low ? 0.25f : 0.1f), V(W * 0.86f, cab_h * 0.96f, L * (low ? 0.42f : 0.5f)), &M_GLASS);
-        part_box(M, V(0, clear + bh + cab_h * 0.97f, low ? 0.3f : 0.12f), V(W * 0.84f, 0.06f, L * (low ? 0.36f : 0.44f)), &body);
+        part_box(M, V(0, clear + bh + cab_h * 0.48f, cz), V(W * 0.86f, cab_h * 0.96f, cl), &M_GLASS);
+        inst(MS_WEDGE, m4_mul(M, m4_trs(V(0, clear + bh, cz - cl / 2 - ws / 2), 3.14159f, 0, 0, V(W * 0.86f, cab_h * 0.96f, ws))), &M_GLASS);
+        inst(MS_WEDGE, m4_mul(M, m4_trs(V(0, clear + bh, cz + cl / 2 + rs / 2), 0, 0, 0, V(W * 0.86f, cab_h * 0.96f, rs))), &M_GLASS);
+        part_box(M, V(0, clear + bh + cab_h * 0.97f, cz), V(W * 0.84f, 0.06f, cl), &body);
+        for (int sm = -1; sm <= 1; sm += 2) part_box(M, V(sm * (W / 2 + 0.08f), clear + bh + 0.12f, cz - cl / 2 - ws * 0.6f), V(0.16f, 0.12f, 0.09f), &body);
+        part_box(M, V(0, clear + bh * 0.02f + 0.02f, 0), V(W * 1.005f, 0.05f, L * 0.98f), &dark);
         if (low) part_box(M, V(0, clear + bh + 0.25f, L / 2 - 0.25f), V(W * 0.9f, 0.06f, 0.35f), &dark);
         if (c->model == VM_MUSCLE && !burnt) {
             Mat st = paint(V(0.85f, 0.85f, 0.85f));
@@ -97,6 +102,24 @@ static void push_car(const Car *c, float t) {
     /* bumpers, lights, wheels */
     part_box(M, V(0, clear + 0.12f, -L / 2 - 0.04f), V(W * 0.96f, 0.2f, 0.1f), &dark);
     part_box(M, V(0, clear + 0.12f, L / 2 + 0.04f), V(W * 0.96f, 0.2f, 0.1f), &dark);
+    if (!burnt) {
+        static const Mat PLATE = {{0.85f, 0.85f, 0.8f}, PAT_PLAIN, 0.2f, 0.4f, {0, 0, 0}, 0};
+        part_box(M, V(0, clear + 0.14f, -L / 2 - 0.1f), V(0.52f, 0.12f, 0.02f), &PLATE);
+        part_box(M, V(0, clear + 0.32f, L / 2 + 0.02f), V(0.52f, 0.12f, 0.02f), &PLATE);
+        part_box(M, V(0, clear + bh * 0.62f, -L / 2 - 0.01f), V(W * 0.4f, bh * 0.3f, 0.03f), &M_BLACK);
+        /* indicators: amber, blinking toward the coming turn */
+        bool blink = c->sig != 0 && fmodf(t * 1.6f, 1) < 0.5f && c->sig_node >= 0 && dist2d(c->pos, node_pos(c->sig_node / (NB + 1), c->sig_node % (NB + 1))) < 45;
+        if (c->sig_node >= 0 && blink) {
+            v3 np = node_pos(c->sig_node / (NB + 1), c->sig_node % (NB + 1));
+            if (dot(sub(np, c->pos), fwd_of(c->yaw)) < -6) blink = false;
+        }
+        for (int sx = -1; sx <= 1; sx += 2) {
+            bool on = blink && sx == c->sig;
+            Mat am = glow(V(0.5f, 0.3f, 0.05f), on ? V(6, 3, 0.3f) : V(0.15f, 0.08f, 0.0f), PAT_PLAIN, 0);
+            part_box(M, V(sx * W * 0.47f, clear + bh * 0.7f, -L / 2 + 0.02f), V(W * 0.08f, 0.1f, 0.06f), &am);
+            part_box(M, V(sx * W * 0.47f, clear + bh * 0.72f, L / 2 - 0.02f), V(W * 0.08f, 0.1f, 0.06f), &am);
+        }
+    }
     if (!burnt) {
         float hl = 0.5f + night * 5;
         Mat head = glow(V(0.8f, 0.8f, 0.75f), V(hl, hl * 0.95f, hl * 0.8f), PAT_PLAIN, 0);
@@ -329,6 +352,39 @@ static void build_glows(float t) {
             billboard(m4_point(M, V(fl ? -0.32f : 0.32f, S->H + 0.1f, 0.1f)), 0.9f, fl ? V(4, 0.2f, 0.1f) : V(0.2f, 0.6f, 5), 1, 0);
         }
     }
+    /* soft contact shadows under cars and people */
+    for (int i = 0; i < MAXCAR; i++) {
+        Car *c = &car[i];
+        if (!c->on || c->sunk || dist2d(c->pos, cp) > 140) continue;
+        const CarSpec *S = &SPEC[c->model];
+        v3 f = mul(fwd_of(c->yaw), S->L / 2 + 0.5f), r = mul(right_of(c->yaw), S->W / 2 + 0.45f);
+        float gy = ground_at(c->pos.x, c->pos.z, c->pos.y + 0.3f, 0.5f) + 0.04f;
+        v3 o = V(c->pos.x, gy, c->pos.z);
+        float a = clampf(1 - (c->pos.y - gy) * 0.3f, 0, 1) * 0.75f;
+        pquad(sub(sub(o, f), r), add(sub(o, f), r), add(add(o, f), r), sub(add(o, f), r), V(0, 0, 0), a, 3);
+        if (c->sig != 0 && fmodf(t * 1.6f, 1) < 0.5f && night > 0.2f && c->sig_node >= 0 && dist2d(c->pos, node_pos(c->sig_node / (NB + 1), c->sig_node % (NB + 1))) < 45) {
+            m4 M = m4_trs(c->pos, c->yaw, c->pitch, c->roll, V(1, 1, 1));
+            billboard(m4_point(M, V(c->sig * S->W * 0.47f, 0.3f + S->H * 0.3f, -S->L / 2 - 0.1f)), 0.3f, V(3, 1.5f, 0.1f), night, 0);
+            billboard(m4_point(M, V(c->sig * S->W * 0.47f, 0.3f + S->H * 0.3f, S->L / 2 + 0.1f)), 0.3f, V(3, 1.5f, 0.1f), night, 0);
+        }
+    }
+    for (int i = 0; i < MAXPED; i++) {
+        Ped *p = &ped[i];
+        if (!p->on || dist2d(p->pos, cp) > 60) continue;
+        v3 o = add(p->pos, V(0, 0.04f, 0));
+        pquad(add(o, V(-0.5f, 0, -0.5f)), add(o, V(0.5f, 0, -0.5f)), add(o, V(0.5f, 0, 0.5f)), add(o, V(-0.5f, 0, 0.5f)), V(0, 0, 0), 0.5f, 3);
+    }
+    if (PL.car < 0 && G.state != ST_TITLE && !PL.swim) {
+        v3 o = V(PL.pos.x, ground_at(PL.pos.x, PL.pos.z, PL.pos.y, 0.3f) + 0.04f, PL.pos.z);
+        pquad(add(o, V(-0.5f, 0, -0.5f)), add(o, V(0.5f, 0, -0.5f)), add(o, V(0.5f, 0, 0.5f)), add(o, V(-0.5f, 0, 0.5f)), V(0, 0, 0), 0.55f, 3);
+    }
+    if (G.state == ST_PLAY || G.state == ST_PAUSE)
+        for (int k = 0; k < nshop; k++) {
+            if (dist2d(shops[k].door, cp) > 120) continue;
+            v3 sc = SHOP_COL[shops[k].type];
+            float a = shop_open(shops[k].type, G.tod) ? 0.8f : 0.2f;
+            ground_ring(add(shops[k].door, V(0, 0.06f, 0)), shops[k].drive_in ? 4.0f : 1.4f, mul(sc, 1.4f), a);
+        }
     /* street lamp glows */
     if (night > 0.05f)
         for (int i = 0; i < NPROP; i++) {
@@ -416,7 +472,8 @@ static void render_scene(float t) {
         float lie = PL.down_t > 0 ? -1.2f : 0;
         v3 at = PL.pos;
         if (PL.swim) at.y = WATER_Y - 1.15f;
-        push_human(at, PL.yaw, PL.anim, len2d(PL.vel), V(0.85f, 0.45f, 0.1f), V(0.12f, 0.14f, 0.22f), V(0.75f, 0.55f, 0.42f), V(0.08f, 0.06f, 0.05f), 1.0f, lie, 0, false, false);
+        const Outfit *o = &OUTFIT[outfit];
+        push_human(at, PL.yaw, PL.anim, len2d(PL.vel), o->shirt, o->pants, V(0.75f, 0.55f, 0.42f), o->hat, 1.0f, lie, 0, false, false);
     }
     push_world_dynamic(t);
     upload_dynamic();
@@ -435,7 +492,9 @@ static void render_scene(float t) {
         stat_count[MS_GROUND] = stat_count[MS_OCEAN] = 0;
         int dg = DI[MS_OCEAN].n;
         DI[MS_OCEAN].n = 0;
+        detail_cx = cp.x; detail_cz = cp.z; detail_r = 150;
         draw_all_instances();
+        detail_r = 420;
         stat_count[MS_GROUND] = sg;
         stat_count[MS_OCEAN] = so;
         DI[MS_OCEAN].n = dg;
@@ -491,6 +550,7 @@ static void render_scene(float t) {
         glUniform4fv(U(P_LIT, "uLightPos"), nframe_lights, lp);
         glUniform3fv(U(P_LIT, "uLightCols"), nframe_lights, lc);
     }
+    detail_cx = cp.x; detail_cz = cp.z; detail_r = 420;
     draw_all_instances();
     glDisable(GL_CULL_FACE);
     build_glows(t);
@@ -646,7 +706,7 @@ static void sim_step(const Input *in, float dt) {
     manage_population(dt, false);
     G.damage_fx = fmaxf(0, G.damage_fx - dt * 1.2f);
     G.shake = fmaxf(0, G.shake - dt * 2.2f);
-    G.msg_t -= dt; G.big_t -= dt; G.toast_t -= dt; G.radio_t -= dt;
+    G.msg_t -= dt; G.big_t -= dt; G.toast_t -= dt; G.radio_t -= dt; shop_msg_t -= dt;
 }
 static void new_game(void) {
     memset(car, 0, sizeof(car));
@@ -671,8 +731,10 @@ static void new_game(void) {
     G.st = 0;
     G.fade = 0;
     /* a car waiting at the safehouse */
-    Car *c = spawn_car(VM_MUSCLE, add(poi[k].pos, V(6, 0, -3.2f)), 1.5708f, DRV_NONE);
-    if (c) { c->col = V(0.55f, 0.06f, 0.05f); c->keep = true; }
+    spawn_own_car(add(poi[k].pos, V(6, 0, -3.2f)), 1.5708f);
+    PL.stamina = 1;
+    PL.energy_t = 0;
+    shop_cur = -1;
     for (int i = 0; i < 40; i++) spawn_traffic(40, 300, true);
     spawn_peds(15, 200, 60);
     bigtext("PORT CALDER", "TAB FOR THE MAP - YELLOW MARKERS ARE COURIER JOBS", 4);
@@ -768,7 +830,7 @@ static int run_selftest(const char *dir) {
     CHECK(shader_errors == 0, "shaders compiled and linked");
     CHECK(audio_selftest() == 0, "audio module self-test");
     int ninst = 0;
-    for (int i = 0; i < MS_N; i++) ninst += stat_count[i];
+    for (int i = 0; i < MS_N; i++) ninst += stat_count[i] + SD[i].n;
     printf("world: %d collision boxes, %d static instances, %d parking slots, %d lights, %d tapes, %d ramps, %d POIs\n", nbox, ninst, nslot, nslight, NTAPE, nramp, npoi);
     /* world sanity */
     int bad_lane = 0, lanes = 0;
@@ -829,7 +891,7 @@ static int run_selftest(const char *dir) {
         new_game();
         G.tod = 10;
         PL.pos = V(12 * PITCH + 30, 0, 9 * PITCH + WALK);
-        int stuck_long = 0, inside = 0, maxai = 0;
+        int stuck_long = 0, inside = 0, maxai = 0, ped_waits = 0;
         float stuck_t[MAXCAR] = {0};
         double speed_sum = 0;
         long speed_n = 0;
@@ -847,6 +909,7 @@ static int run_selftest(const char *dir) {
                     if (stuck_t[i] > 45) { stuck_long++; stuck_t[i] = -1000; float gp; bool pp; obstacle_ahead(c, &gp, &pp); printf("    stuck car at %.0f,%.0f yaw %.2f node %d,%d dir %d nwp %d gap %.1f wp0 %.0f,%.0f stop %d light %d\n", c->pos.x, c->pos.z, c->yaw, c->ni, c->nj, c->ndir, c->nwp, gp, c->wp[0].x, c->wp[0].z, c->wstop[0], light_state(c->ni, c->nj, c->ndir)); }
                     if (point_blocked(add(c->pos, V(0, 0.3f, 0)), 0.3f, 1.0f)) inside++;
                 }
+                for (int i = 0; i < MAXPED; i++) if (ped[i].on && ped[i].state == PS_WAITX) ped_waits++;
                 if (ai > maxai) maxai = ai;
             }
         }
@@ -855,6 +918,7 @@ static int run_selftest(const char *dir) {
         CHECK(speed_n && speed_sum / speed_n > 4, "traffic keeps moving");
         CHECK(stuck_long <= 3, "cars stuck for more than 45 s: %d", stuck_long);
         CHECK(inside == 0, "no car inside a building (%d samples)", inside);
+        CHECK(ped_waits > 0, "pedestrians wait at crossings for the walk signal (%d samples)", ped_waits);
         CHECK(!any_nan(), "no NaN positions");
     }
 
@@ -895,6 +959,8 @@ static int run_selftest(const char *dir) {
         srand(11);
         new_game();
         G.tod = 12;
+        traffic_target = 12;
+        for (int i = 0; i < MAXCAR; i++) if (car[i].on && car[i].driver == DRV_AI && i % 3) car[i].on = false;
         bot_put_in_car(lane_pt(races[1].i, races[1].j, races[1].dir, 12, LANE_OFF), races[1].yaw, VM_SPORTS);
         Input in;
         float t = 0;
@@ -914,6 +980,7 @@ static int run_selftest(const char *dir) {
                 SHOT("04_race");
             }
         }
+        traffic_target = 38;
         printf("    race end: %s / %s  car %d on %d hp %.0f wrecked %d sunk %d\n", G.big, G.big2, PL.car, PL.car >= 0 ? car[PL.car].on : -1, PL.car >= 0 ? car[PL.car].hp : 0, PL.car >= 0 ? car[PL.car].wrecked : 0, PL.car >= 0 ? car[PL.car].sunk : 0);
         printf("    race state: type %d stage %d cp %d/%d t %.0f car %.0f,%.0f\n", MS.type, MS.stage, MS.cp, races[1].ncp, t, car[PL.car].pos.x, car[PL.car].pos.z);
         CHECK(started, "race starts from its marker");
@@ -957,6 +1024,7 @@ static int run_selftest(const char *dir) {
         G.rain = 0.8f; G.rain_target = 0.8f; G.rain_timer = 999;
         v3 start = lane_pt(10, 9, 0, 10, LANE_OFF);
         bot_put_in_car(start, yaw_of(dir_vec(0)), VM_SEDAN);
+        for (int i = 0; i < MAXCAR; i++) if (car[i].on && car[i].driver != DRV_PLAYER && dist2d(car[i].pos, start) < 90) car[i].on = false;
         Ped *p = spawn_ped(lane_pt(10, 9, 0, 40, LANE_OFF), false);
         p->state = PS_IDLE;
         Input in = {0};
@@ -967,7 +1035,7 @@ static int run_selftest(const char *dir) {
         float t = 0;
         bool shot = false;
         memset(&in, 0, sizeof(in));
-                while (t < 120 && G.state == ST_PLAY) {
+        while (t < 120 && G.state == ST_PLAY) {
             sim_step(&in, 1 / 60.0f);
             t += 1 / 60.0f;
             if (!shot && count_cops_near(30) >= 2) {
@@ -979,7 +1047,6 @@ static int run_selftest(const char *dir) {
                 SHOT("06_police_night_rain");
             }
         }
-        printf("    bust test: state %d hp %.0f car hp %.0f\n", G.state, PL.hp, PL.car >= 0 ? car[PL.car].hp : -1);
         CHECK(G.state == ST_BUSTED, "the police bust a stationary player (%.0f s)", t);
         for (int s = 0; s < 60 && G.state == ST_BUSTED; s++) { G.st += 0.05f; update_camera(&none, 0.05f, t); }
         render_frame(t);
@@ -1001,6 +1068,105 @@ static int run_selftest(const char *dir) {
         respawn_at(POI_HOSPITAL);
     }
 
+
+    /* shops */
+    {
+        new_game();
+        G.tod = 12;
+        update_env();
+        Input in = {0};
+        int ks = -1, kd = -1, kg = -1, kc = -1, kv = -1, ka = -1;
+        for (int k = 0; k < nshop; k++) {
+            int ty = shops[k].type;
+            if (ty == SHOP_STORE && ks < 0) ks = k;
+            if (ty == SHOP_DINER && kd < 0) kd = k;
+            if (ty == SHOP_GAS && kg < 0) kg = k;
+            if (ty == SHOP_CLOTHES && kc < 0) kc = k;
+            if (ty == SHOP_DEALER && kv < 0) kv = k;
+            if (ty == SHOP_AUTO && ka < 0) ka = k;
+        }
+        int bad_door = 0;
+        for (int k = 0; k < nshop; k++) if (point_blocked(add(shops[k].door, V(0, 0.1f, 0)), shops[k].drive_in ? 1.2f : 0.4f, 1.7f)) { bad_door++; printf("    blocked shop door %s at %.0f,%.0f\n", shops[k].name, shops[k].door.x, shops[k].door.z); }
+        CHECK(bad_door == 0, "all %d shop entrances are reachable", nshop);
+        /* walk into a store and buy a sandwich */
+        G.money = 100000;
+        PL.pos = shops[ks].door;
+        PL.hp = 40;
+        in.enter = true;
+        sim_step(&in, 1 / 60.0f);
+        in.enter = false;
+        CHECK(G.state == ST_SHOP && shop_cur == ks, "F at a store door opens the shop menu");
+        int m0 = G.money;
+        shop_sel = 1;
+        shop_buy();
+        CHECK(PL.hp >= 69 && G.money == m0 - 6, "buying a sandwich heals (+30) and costs $6");
+        PL.cam_yaw = 0; PL.cam_pitch = -0.1f;
+        update_camera(&none, 1 / 60.0f, 0);
+        render_frame(40);
+        SHOT("18_shop_menu");
+        shop_input(0, false, true);
+        CHECK(G.state == ST_PLAY, "leaving the shop returns to play");
+        /* opening hours */
+        G.tod = 3;
+        PL.pos = shops[kd].door;
+        in.enter = true;
+        sim_step(&in, 1 / 60.0f);
+        in.enter = false;
+        CHECK(G.state == ST_PLAY, "the diner is closed at 03:00");
+        G.tod = 12;
+        /* clothes */
+        PL.pos = shops[kc].door;
+        in.enter = true; sim_step(&in, 1 / 60.0f); in.enter = false;
+        shop_sel = 2; shop_buy(); shop_input(0, false, true);
+        CHECK(outfit == 2, "bought and wearing the %s", OUTFIT[outfit].name);
+        /* fuel runs out, then refuel at a gas station */
+        bot_put_in_car(lane_pt(14, 3, 1, 15, LANE_OFF), yaw_of(dir_vec(1)), VM_SEDAN);
+        car[PL.car].fuel = 0.002f;
+        in.fwd = 1;
+        float vmax_seen = 0;
+        for (int st = 0; st < 60 * 8; st++) { sim_step(&in, 1 / 60.0f); vmax_seen = fmaxf(vmax_seen, car_speed(&car[PL.car])); }
+        float v_after = car_speed(&car[PL.car]);
+        CHECK(car[PL.car].fuel <= 0 && v_after < vmax_seen - 2, "an empty tank kills the engine (%.1f -> %.1f m/s)", vmax_seen, v_after);
+        in.fwd = 0;
+        bot_put_in_car(shops[kg].door, 1.5708f, VM_SEDAN);
+        car[PL.car].fuel = 0.1f;
+        for (int st = 0; st < 30; st++) sim_step(&none, 1 / 60.0f);
+        in.enter = true; sim_step(&in, 1 / 60.0f); in.enter = false;
+        CHECK(G.state == ST_SHOP && items[0].kind == IT_FUEL, "driving into the pumps opens the fuel menu");
+        m0 = G.money;
+        shop_sel = 0; shop_buy();
+        CHECK(car[PL.car].fuel >= 0.999f && G.money < m0, "filled the tank for $%d", m0 - G.money);
+        shop_input(0, false, true);
+        /* car dealer */
+        car[PL.car].on = false; PL.car = -1;
+        PL.pos = shops[kv].door;
+        in.enter = true; sim_step(&in, 1 / 60.0f); in.enter = false;
+        shop_sel = 5; shop_buy(); shop_input(0, false, true);
+        Car *oc = own_car();
+        CHECK(OWN.model == VM_SPORTS && oc && oc->model == VM_SPORTS && dist2d(oc->pos, shops[kv].spawn) < 3, "bought a coupe at the dealer, parked outside");
+        /* drive the new car to the auto shop for an engine upgrade */
+        PL.car = (int)(oc - car); oc->driver = DRV_PLAYER;
+        oc->pos = shops[ka].door; oc->vel = V(0, 0, 0);
+        for (int st = 0; st < 30; st++) sim_step(&none, 1 / 60.0f);
+        in.enter = true; sim_step(&in, 1 / 60.0f); in.enter = false;
+        int eng = -1;
+        for (int k = 0; k < nitems; k++) if (items[k].kind == IT_ENGINE) eng = k;
+        if (eng >= 0) { shop_sel = eng; shop_buy(); }
+        shop_input(0, false, true);
+        CHECK(UPG.engine == 1, "engine stage 1 fitted to the owned car");
+        UPG.engine = 0;
+        /* police notice speeding */
+        G.heat = 0; G.stars = 0; PL.law_cool = 0;
+        bot_put_in_car(lane_pt(8, 3, 0, 12, LANE_OFF), yaw_of(dir_vec(0)), VM_SPORTS);
+        car[PL.car].fuel = 1;
+        car[PL.car].vel = mul(fwd_of(car[PL.car].yaw), 30);
+        Car *pc = spawn_car(VM_POLICE, lane_pt(8, 3, 0, 40, -LANE_OFF), yaw_of(dir_vec(2)), DRV_AI);
+        if (pc) place_on_edge(pc, 9, 3, 2, 20);
+        in.fwd = 1;
+        for (int st = 0; st < 60 && G.stars == 0; st++) sim_step(&in, 1 / 60.0f);
+        CHECK(G.stars >= 1, "speeding past a patrol car earns a star");
+        clear_police();
+    }
     /* scenery screenshots */
     struct { const char *name; v3 eye, at; float tod, rain; } views[] = {
         {"08_downtown_sunset", {12 * PITCH + 3, 2.0f, 14 * PITCH + 30}, {12 * PITCH - 20, 50, 10 * PITCH}, 18.3f, 0},
@@ -1010,6 +1176,10 @@ static int run_selftest(const char *dir) {
         {"12_maple_heights", {2 * PITCH + 20, 3, 9 * PITCH + 4}, {3 * PITCH, 3, 7 * PITCH}, 15.0f, 0},
         {"13_rain_midtown", {16 * PITCH + 2, 1.6f, 6 * PITCH + 20}, {16 * PITCH + 2, 6, 4 * PITCH}, 20.5f, 0.9f},
         {"14_park_aerial", {2 * PITCH, 120, 9 * PITCH}, {5 * PITCH, 0, 5.5f * PITCH}, 11.0f, 0},
+        {"19_gas_station_night", {5 * PITCH + 32, 3.0f, 10 * PITCH - 14}, {5 * PITCH + 32, 3, 10 * PITCH + 25}, 22.0f, 0},
+        {"20_diner_dusk", {7 * PITCH + 50, 1.8f, 3 * PITCH + 2}, {7 * PITCH + 26, 3.5f, 3 * PITCH + 11}, 19.2f, 0},
+        {"21_shopping_street", {16 * PITCH + 1, 1.7f, 9 * PITCH + 6}, {16 * PITCH + 50, 3, 9 * PITCH + 10}, 14.5f, 0},
+        {"22_dealer", {16 * PITCH + 32, 2.5f, 6 * PITCH - 6}, {16 * PITCH + 32, 3, 6 * PITCH + 30}, 16.0f, 0},
     };
     for (size_t v = 0; v < sizeof(views) / sizeof(views[0]); v++) {
         new_game();
@@ -1158,6 +1328,12 @@ int main(int argc, char **argv) {
             case SDL_CONTROLLERDEVICEADDED: if (!pad) pad = SDL_GameControllerOpen(e.cdevice.which); break;
             case SDL_CONTROLLERBUTTONDOWN:
                 if (G.state == ST_TITLE && (e.cbutton.button == SDL_CONTROLLER_BUTTON_START || e.cbutton.button == SDL_CONTROLLER_BUTTON_A)) start = true;
+                else if (G.state == ST_SHOP) {
+                    if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP) shop_input(-1, false, false);
+                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN) shop_input(1, false, false);
+                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) shop_input(0, true, false);
+                    else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_B || e.cbutton.button == SDL_CONTROLLER_BUTTON_START) shop_input(0, false, true);
+                }
                 else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) {
                     if (G.state == ST_PLAY) G.state = ST_PAUSE; else if (G.state == ST_PAUSE || G.state == ST_MAP) G.state = ST_PLAY;
                 } else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_BACK) {
@@ -1191,6 +1367,11 @@ int main(int argc, char **argv) {
                     else if (k == SDLK_q) edge.radio_prev = true;
                     else if (k == SDLK_t) edge.taxi = true;
                     else if (k == SDLK_c) PL.cam_zoom = PL.cam_zoom > 1.5f ? 0.75f : (PL.cam_zoom > 0 ? PL.cam_zoom : 1) + 0.45f;
+                } else if (G.state == ST_SHOP) {
+                    if (k == SDLK_UP || k == SDLK_w) shop_input(-1, false, false);
+                    else if (k == SDLK_DOWN || k == SDLK_s) shop_input(1, false, false);
+                    else if (k == SDLK_RETURN || k == SDLK_f || k == SDLK_SPACE || k == SDLK_KP_ENTER) shop_input(0, true, false);
+                    else if (k == SDLK_ESCAPE || k == SDLK_q || k == SDLK_BACKSPACE) shop_input(0, false, true);
                 } else if (G.state == ST_MAP) {
                     if (k == SDLK_TAB || k == SDLK_ESCAPE) G.state = ST_PLAY;
                 } else if (G.state == ST_PAUSE) {
@@ -1267,7 +1448,7 @@ int main(int argc, char **argv) {
         } else {
             update_env();
         }
-        if (G.state != ST_PLAY && G.state != ST_PAUSE && G.state != ST_MAP && G.state != ST_TITLE && G.state != ST_BUSTED && G.state != ST_WASTED) G.state = ST_PLAY;
+        if (G.state == ST_SHOP) shop_msg_t -= dt;
         update_audio_layers();
         render_frame(t);
         glBindFramebuffer(GL_READ_FRAMEBUFFER, fbo_ldr);

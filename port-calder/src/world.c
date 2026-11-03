@@ -309,13 +309,16 @@ static void tower(float x0, float z0, float x1, float z1, float h, unsigned s) {
     else neon(x0 - 0.35f, 5.2f, z0 + 6, x0 - 0.05f, 6.0f, z1 - 6, nc, r2);
 }
 
+static void business_sign(float x0, float z0, float x1, unsigned s);
 static void midrise(float x0, float z0, float x1, float z1, float h, unsigned s, bool old) {
     float r = hash2f((int)(x0 * 3), (int)(z0 * 7), 3);
     Mat m = mat(PICK(WALLS, r), PAT_MIDRISE, 0, 0.85f);
     building(x0, z0, x1, z1, h, &m, r);
     sbox(x0 - 0.2f, h, z0 - 0.2f, x1 + 0.2f, h + 0.6f, z1 + 0.2f, &M_CONCRETE, 0, false);
     rooftop_bits(x0, z0, x1, z1, h + 0.6f, old ? 0.8f : r);
-    if (s % 4 == 1) neon(x0 + 3, 4.6f, z0 - 0.3f, x1 - 3, 5.1f, z0 - 0.05f, NEONS[(s / 4) % 6], r);
+    bool north_face = fmodf(z0, PITCH) < 9.6f;
+    if (north_face && hashu(s * 3u + 1u) % 100 < 55) business_sign(x0, z0, x1, hashu(s * 7u + 3u));
+    else if (s % 4 == 1) neon(x0 + 3, 4.6f, z0 - 0.3f, x1 - 3, 5.1f, z0 - 0.05f, NEONS[(s / 4) % 6], r);
     if (old && s % 3 == 0) { /* awning */
         Mat aw = mat(NEONS[s % 6], PAT_PLAIN, 0, 0.7f);
         aw.base = mul(aw.base, 0.5f);
@@ -478,6 +481,273 @@ static void build_landmarks(void) {
 }
 
 /* ---- the whole city */
+
+/* ---- 3D signs built from the HUD pixel font: one small emissive cube per lit pixel */
+static float sign_width(const char *t, float px) { return ((float)strlen(t) * 6 - 1) * px; }
+static void sign_text(const char *t, v3 center, v3 right, float px, v3 col, float night) {
+    bool dm = detail_mode;
+    detail_mode = true;
+    Mat m = glow(mul(col, 0.35f), mul(col, 2.4f), PAT_PLAIN, night);
+    float w = sign_width(t, px);
+    int n = (int)strlen(t);
+    v3 nrm = V(right.z, 0, -right.x);
+    for (int ci = 0; ci < n; ci++) {
+        char c = t[ci] >= 'a' && t[ci] <= 'z' ? (char)(t[ci] - 32) : t[ci];
+        const char *at = strchr(FONT_CHARS, c);
+        if (!at || c == ' ') continue;
+        int g = (int)(at - FONT_CHARS);
+        for (int r = 0; r < 7; r++)
+            for (int k = 0; k < 5; k++) {
+                if (!(FONT[g][r] & (16 >> k))) continue;
+                float u = (ci * 6 + k) * px + px * 0.5f - w / 2;
+                v3 p = add(add(center, mul(right, u)), V(0, (3 - r) * px, 0));
+                float ax = fabsf(right.x) > 0.5f ? px * 0.9f : 0.08f, az = fabsf(right.x) > 0.5f ? 0.08f : px * 0.9f;
+                inst_s(MS_CUBE, m4_box(add(p, mul(nrm, 0.0f)), V(ax, px * 0.9f, az)), &m, 0);
+            }
+    }
+    detail_mode = dm;
+}
+/* a backing board behind a sign */
+static void sign_board(v3 center, v3 right, float w, float h, v3 col) {
+    v3 nrm = V(right.z, 0, -right.x);
+    v3 c = center;
+    (void)nrm;
+    float ax = fabsf(right.x) > 0.5f ? w : 0.06f, az = fabsf(right.x) > 0.5f ? 0.06f : w;
+    Mat m = mat(col, PAT_PLAIN, 0.3f, 0.5f);
+    inst_s(MS_CUBE, m4_box(c, V(ax, h, az)), &m, 0);
+}
+
+/* ---- shops */
+enum { SHOP_GAS, SHOP_STORE, SHOP_DINER, SHOP_CLOTHES, SHOP_DEALER, SHOP_AUTO, SHOP_N };
+static const char *SHOP_KIND[SHOP_N] = {"GAS STATION", "24/7 STORE", "DINER", "CLOTHING", "CAR DEALER", "AUTO SHOP"};
+static const float SHOP_OPEN[SHOP_N] = {0, 0, 6, 9, 9, 8}, SHOP_CLOSE[SHOP_N] = {24, 24, 23, 21, 20, 20};
+static const v3 SHOP_COL[SHOP_N] = {{0.2f, 0.9f, 1.0f}, {0.4f, 1.0f, 0.4f}, {1.0f, 0.3f, 0.35f}, {1.0f, 0.5f, 0.9f}, {1.0f, 0.85f, 0.3f}, {1.0f, 0.55f, 0.15f}};
+static const char SHOP_LETTER[SHOP_N] = {'G', 'M', 'D', 'C', 'V', 'A'};
+typedef struct { int type, i, j; v3 door, spawn; char name[24]; bool drive_in; } Shop;
+#define MAXSHOP 32
+static Shop shops[MAXSHOP];
+static int nshop;
+static void add_shop(int type, int i, int j, const char *name) {
+    if (nshop >= MAXSHOP) return;
+    Shop *S = &shops[nshop++];
+    S->type = type; S->i = i; S->j = j;
+    snprintf(S->name, sizeof(S->name), "%s", name);
+    float x0 = i * PITCH + 9, z0 = j * PITCH + 9, x1 = (i + 1) * PITCH - 9;
+    float cx = (x0 + x1) / 2;
+    S->drive_in = type == SHOP_GAS || type == SHOP_AUTO;
+    S->door = type == SHOP_GAS ? V(cx, 0, z0 + 12) : type == SHOP_AUTO ? V(cx, 0, z0 + 8) : V(cx, 0, j * PITCH + WALK);
+    S->spawn = V(cx + 8, 0, z0 + 8);
+}
+static int shop_at_block(int i, int j) { for (int k = 0; k < nshop; k++) if (shops[k].i == i && shops[k].j == j) return k; return -1; }
+static bool shop_open(int type, float tod) { return tod >= SHOP_OPEN[type] && tod < SHOP_CLOSE[type]; }
+
+static void storefront(float x0, float z0, float x1, float h, v3 wall, const char *name, v3 col, unsigned s) {
+    float cx = (x0 + x1) / 2;
+    Mat glass = {{0.04f, 0.05f, 0.06f}, PAT_PLAIN, 0.85f, 0.05f, {0.30f, 0.22f, 0.13f}, 0.75f};
+    sbox(x0 + 2, 0.25f, z0 - 0.08f, x1 - 2, 3.3f, z0 + 0.02f, &glass, 0, false);
+    Mat frame = mat(mul(wall, 0.5f), PAT_PLAIN, 0.4f, 0.5f);
+    for (float x = x0 + 2; x <= x1 - 2 + 0.01f; x += (x1 - x0 - 4) / 4) sbox(x - 0.08f, 0.25f, z0 - 0.12f, x + 0.08f, 3.3f, z0, &frame, 0, false);
+    Mat aw = mat(mul(col, 0.55f), PAT_RIBS, 0, 0.7f);
+    inst_s(MS_WEDGE, m4_trs(V(cx, 3.45f, z0 - 0.9f), 3.14159f, 0, 0, V(x1 - x0 - 2, 0.7f, 1.8f)), &aw, 0);
+    float px = fminf(0.22f, (x1 - x0 - 3) / ((float)strlen(name) * 6));
+    sign_board(V(cx, h - 1.3f, z0 - 0.02f), V(-1, 0, 0), sign_width(name, px) + 0.8f, 7 * px + 0.5f, V(0.06f, 0.06f, 0.07f));
+    sign_text(name, V(cx, h - 1.3f, z0 - 0.09f), V(-1, 0, 0), px, col, 0.6f);
+    add_slight(V(cx, 3.0f, z0 - 1.5f), mul(col, 1.2f), 10);
+    (void)s;
+}
+static void build_shop(int k, float x0, float z0, float x1, float z1) {
+    Shop *S = &shops[k];
+    float cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    v3 col = SHOP_COL[S->type];
+    unsigned s = hashu((unsigned)k * 991u);
+    switch (S->type) {
+    case SHOP_GAS: {
+        lot_type[S->i][S->j] = LOT_ASPH;
+        Mat white = mat(V(0.85f, 0.86f, 0.88f), PAT_PLAIN, 0.3f, 0.4f);
+        Mat lit = glow(V(0.9f, 0.9f, 0.9f), V(3.2f, 3.2f, 3.0f), PAT_PLAIN, 0.6f);
+        for (int a = -1; a <= 1; a += 2)
+            for (int b = 0; b < 2; b++) sbox(cx + a * 10 - 0.3f, 0, z0 + 6 + b * 12 - 0.3f, cx + a * 10 + 0.3f, 5.4f, z0 + 6 + b * 12 + 0.3f, &white, 0, true);
+        sbox(cx - 13, 5.4f, z0 + 3, cx + 13, 6.4f, z0 + 21, &white, 0, false);
+        sbox(cx - 12, 5.3f, z0 + 4, cx + 12, 5.4f, z0 + 20, &lit, 0, false);
+        Mat band = mat(mul(col, 0.6f), PAT_PLAIN, 0.3f, 0.5f);
+        sbox(cx - 13.05f, 5.5f, z0 + 2.95f, cx + 13.05f, 6.3f, z0 + 3.0f, &band, 0, false);
+        sign_text(S->name, V(cx, 5.9f, z0 + 2.9f), V(-1, 0, 0), 0.1f, col, 0.5f);
+        Mat pump = mat(mul(col, 0.7f), PAT_PLAIN, 0.4f, 0.4f);
+        for (int a = -1; a <= 1; a += 2) {
+            sbox(cx + a * 4.5f - 0.6f, 0, z0 + 7, cx + a * 4.5f + 0.6f, 0.25f, z0 + 17, &M_CONCRETE, 0, false);
+            for (int b = 0; b < 2; b++) sbox(cx + a * 4.5f - 0.35f, 0.25f, z0 + 9 + b * 6 - 0.25f, cx + a * 4.5f + 0.35f, 1.9f, z0 + 9 + b * 6 + 0.25f, &pump, 0, true);
+        }
+        for (int q = 0; q < 4; q++) add_slight(V(cx + (q & 1 ? 6 : -6), 5, z0 + (q & 2 ? 16 : 8)), V(2.6f, 2.6f, 2.4f), 14);
+        Mat kiosk = mat(V(0.75f, 0.74f, 0.70f), PAT_MIDRISE, 0, 0.7f);
+        building(x0 + 8, z1 - 15, x1 - 8, z1 - 2, 4.8f, &kiosk, 0.3f);
+        storefront(x0 + 8, z1 - 15, x1 - 8, 4.8f, V(0.75f, 0.74f, 0.70f), "SNACKS", col, s);
+        /* price totem */
+        sbox(x0 + 1, 0, z0 + 1, x0 + 2.4f, 6.5f, z0 + 2, &white, 0, true);
+        sign_text("GAS", V(x0 + 1.7f, 5.4f, z0 + 0.92f), V(-1, 0, 0), 0.15f, col, 0.5f);
+        sign_text("1.75", V(x0 + 1.7f, 3.8f, z0 + 0.92f), V(-1, 0, 0), 0.08f, V(1, 0.6f, 0.1f), 0.5f);
+        break;
+    }
+    case SHOP_AUTO: {
+        lot_type[S->i][S->j] = LOT_ASPH;
+        Mat m = mat(V(0.35f, 0.36f, 0.38f), PAT_RIBS, 0.5f, 0.5f);
+        building(x0 + 3, z0 + 13, x1 - 3, z1 - 2, 8, &m, 0);
+        Mat door = mat(V(0.15f, 0.15f, 0.16f), PAT_RIBS, 0.6f, 0.4f);
+        for (int a = -1; a <= 1; a += 2) sbox(cx + a * 9 - 4, 0, z0 + 12.9f, cx + a * 9 + 4, 5, z0 + 13, &door, 0, false);
+        sign_board(V(cx, 6.6f, z0 + 12.95f), V(-1, 0, 0), sign_width(S->name, 0.16f) + 1, 1.7f, V(0.05f, 0.05f, 0.05f));
+        sign_text(S->name, V(cx, 6.6f, z0 + 12.88f), V(-1, 0, 0), 0.16f, col, 0.5f);
+        add_slight(V(cx, 6, z0 + 9), V(2.6f, 1.8f, 1.0f), 16);
+        Mat tyre = M_DARKMETAL;
+        for (int t = 0; t < 4; t++) inst_s(MS_CYL8, m4_trs(V(x0 + 4, t * 0.3f, z0 + 4), 0, 0, 0, V(0.7f, 0.28f, 0.7f)), &tyre, 0);
+        break;
+    }
+    case SHOP_DEALER: {
+        lot_type[S->i][S->j] = LOT_ASPH;
+        Mat glassb = mat(V(0.75f, 0.76f, 0.78f), PAT_TOWER, 0.6f, 0.2f);
+        building(x0 + 3, z0 + 17, x1 - 3, z1 - 3, 8, &glassb, 0.8f);
+        sign_board(V(cx, 7.0f, z0 + 16.95f), V(-1, 0, 0), sign_width(S->name, 0.18f) + 1, 1.8f, V(0.06f, 0.06f, 0.07f));
+        sign_text(S->name, V(cx, 7.0f, z0 + 16.88f), V(-1, 0, 0), 0.18f, col, 0.5f);
+        Mat pole = M_STEEL;
+        for (int f = 0; f < 6; f++) {
+            float x = x0 + 2 + f * 8.4f;
+            inst_s(MS_CYL8, m4_trs(V(x, 0, z0 + 1), 0, 0, 0, V(0.12f, 6, 0.12f)), &pole, 0);
+            Mat flag = mat(NEONS[f % 6], PAT_PLAIN, 0, 0.7f);
+            inst_s(MS_CUBE, m4_box(V(x + 0.5f, 5.3f, z0 + 1), V(1.0f, 1.2f, 0.03f)), &flag, 0);
+        }
+        add_slight(V(cx, 5, z0 + 10), V(2.8f, 2.6f, 2.2f), 18);
+        break;
+    }
+    default: {
+        /* walk-in shop on the front half, an ordinary building behind it */
+        v3 wall = S->type == SHOP_DINER ? V(0.78f, 0.78f, 0.80f) : S->type == SHOP_CLOTHES ? V(0.25f, 0.22f, 0.25f) : V(0.62f, 0.58f, 0.50f);
+        Mat m = S->type == SHOP_DINER ? mat(wall, PAT_PLAIN, 0.9f, 0.25f) : mat(wall, PAT_MIDRISE, 0, 0.8f);
+        float h = S->type == SHOP_DINER ? 5.0f : 6.5f;
+        building(x0 + 2, z0 + 2, x1 - 2, cz - 1, h, &m, 0.2f);
+        if (S->type == SHOP_DINER) {
+            Mat stripe = mat(V(0.7f, 0.08f, 0.08f), PAT_PLAIN, 0.2f, 0.4f);
+            sbox(x0 + 1.9f, 3.6f, z0 + 1.88f, x1 - 1.9f, 4.0f, cz - 0.9f, &stripe, 0, false);
+        }
+        storefront(x0 + 2, z0 + 2, x1 - 2, h + 1.8f, wall, S->name, col, s);
+        midrise(x0 + 2, cz + 1, x1 - 2, z1 - 2, 9 + (s % 8), s, true);
+        break;
+    }
+    }
+}
+
+/* ---- generic street-level businesses and street furniture */
+static const char *BIZ[] = {"CAFE", "BAKERY", "BOOKS", "PHARMACY", "PIZZA", "BAR", "SALON", "BANK", "FLORIST", "SUSHI", "LAUNDRY", "DELI",
+                            "RECORDS", "HARDWARE", "OPTICIAN", "NOODLES", "GYM", "TAILOR", "ARCADE", "PAWN", "CINEMA", "TACOS", "BARBER", "THRIFT"};
+static void business_sign(float x0, float z0, float x1, unsigned s) {
+    detail_mode = true;
+    const char *name = BIZ[s % (sizeof(BIZ) / sizeof(BIZ[0]))];
+    float w = x1 - x0;
+    float px = 0.13f;
+    if (sign_width(name, px) > w - 3) { detail_mode = false; return; }
+    float cx = (x0 + x1) / 2 + ((s >> 8) % 3 - 1.0f) * (w - sign_width(name, px) - 3) * 0.3f;
+    v3 col = NEONS[(s >> 4) % 6];
+    sign_board(V(cx, 4.35f, z0 - 0.02f), V(-1, 0, 0), sign_width(name, px) + 0.6f, 1.3f, V(0.05f, 0.05f, 0.06f));
+    sign_text(name, V(cx, 4.35f, z0 - 0.09f), V(-1, 0, 0), px, col, 0.65f);
+    Mat aw = mat(mul(NEONS[(s >> 6) % 6], 0.45f), PAT_RIBS, 0, 0.7f);
+    if (s % 2) inst_s(MS_WEDGE, m4_trs(V((x0 + x1) / 2, 3.25f, z0 - 0.8f), 3.14159f, 0, 0, V(w - 3, 0.55f, 1.6f)), &aw, 0);
+    detail_mode = false;
+}
+
+static int furniture_count;
+static void furniture_item(int kind, v3 p, bool along_x, int district) {
+    Mat dark = mat(V(0.06f, 0.12f, 0.08f), PAT_PLAIN, 0.6f, 0.4f);
+    furniture_count++;
+    switch (kind) {
+    case 0: /* trash bin */
+        inst_s(MS_CYL8, m4_trs(p, 0, 0, 0, V(0.6f, 0.95f, 0.6f)), &dark, 0);
+        add_box(V(p.x - 0.3f, 0, p.z - 0.3f), V(p.x + 0.3f, 0.95f, p.z + 0.3f));
+        break;
+    case 1: { /* bench */
+        float w = 1.9f, d = 0.55f;
+        float ax = along_x ? w : d, az = along_x ? d : w;
+        Mat wood = M_WOOD;
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 0.45f, 0)), V(ax, 0.08f, az)), &wood, 0);
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 0.2f, 0)), V(along_x ? 0.1f : d * 0.8f, 0.4f, along_x ? d * 0.8f : 0.1f)), &M_DARKMETAL, 0);
+        add_box(V(p.x - ax / 2, 0, p.z - az / 2), V(p.x + ax / 2, 0.8f, p.z + az / 2));
+        break;
+    }
+    case 2: { /* fire hydrant */
+        Mat red = mat(V(0.6f, 0.06f, 0.04f), PAT_PLAIN, 0.4f, 0.5f);
+        if (district == D_MAPLE || district == D_SEABRIGHT) red.base = V(0.75f, 0.6f, 0.05f);
+        inst_s(MS_CYL8, m4_trs(p, 0, 0, 0, V(0.36f, 0.7f, 0.36f)), &red, 0);
+        inst_s(MS_SPHERE, m4_trs(add(p, V(0, 0.7f, 0)), 0, 0, 0, V(0.17f, 0.15f, 0.17f)), &red, 0);
+        add_box(V(p.x - 0.2f, 0, p.z - 0.2f), V(p.x + 0.2f, 0.8f, p.z + 0.2f));
+        break;
+    }
+    case 3: { /* bus stop shelter */
+        float w = 3.6f, d = 1.4f;
+        float ax = along_x ? w : d, az = along_x ? d : w;
+        Mat glassm = {{0.10f, 0.12f, 0.13f}, PAT_PLAIN, 0.7f, 0.05f, {0, 0, 0}, 0};
+        Mat lit = glow(V(0.8f, 0.8f, 0.8f), V(2.0f, 2.0f, 1.9f), PAT_PLAIN, 1);
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 2.45f, 0)), V(ax + 0.2f, 0.12f, az + 0.2f)), &M_STEEL, 0);
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 2.37f, 0)), V(ax * 0.9f, 0.04f, az * 0.6f)), &lit, 0);
+        v3 back = along_x ? V(0, 1.3f, d / 2 * (p.z > 0 ? 1 : 1)) : V(d / 2, 1.3f, 0);
+        (void)back;
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 1.3f, 0)), along_x ? V(w, 2.1f, 0.05f) : V(0.05f, 2.1f, w)), &glassm, 0);
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 0.45f, 0)), along_x ? V(w * 0.8f, 0.08f, 0.45f) : V(0.45f, 0.08f, w * 0.8f)), &M_DARKMETAL, 0);
+        Mat ad = glow(V(0.3f, 0.3f, 0.3f), mul(NEONS[furniture_count % 6], 0.9f), PAT_PLAIN, 0.8f);
+        inst_s(MS_CUBE, m4_box(add(p, along_x ? V(w / 2 + 0.05f, 1.3f, 0) : V(0, 1.3f, w / 2 + 0.05f)), along_x ? V(0.06f, 1.6f, d * 0.9f) : V(d * 0.9f, 1.6f, 0.06f)), &ad, 0);
+        add_box(V(p.x - (along_x ? w / 2 : 0.1f), 0, p.z - (along_x ? 0.1f : w / 2)), V(p.x + (along_x ? w / 2 : 0.1f), 2.5f, p.z + (along_x ? 0.1f : w / 2)));
+        break;
+    }
+    case 4: { /* street tree in a planter */
+        Mat pl = M_CONCRETE;
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 0.15f, 0)), V(1.3f, 0.3f, 1.3f)), &pl, 0);
+        tree(p.x, p.z, 0.75f, 0, (unsigned)(p.x * 13 + p.z * 7));
+        break;
+    }
+    case 5: { /* newspaper / mail box */
+        Mat blue = mat(V(0.08f, 0.15f, 0.45f), PAT_PLAIN, 0.4f, 0.5f);
+        inst_s(MS_CUBE, m4_box(add(p, V(0, 0.55f, 0)), V(0.5f, 1.1f, 0.45f)), &blue, 0);
+        add_box(V(p.x - 0.25f, 0, p.z - 0.25f), V(p.x + 0.25f, 1.1f, p.z + 0.25f));
+        break;
+    }
+    default: { /* bollard */
+        Mat y = mat(V(0.75f, 0.6f, 0.08f), PAT_PLAIN, 0.3f, 0.6f);
+        inst_s(MS_CYL8, m4_trs(p, 0, 0, 0, V(0.3f, 0.9f, 0.3f)), &y, 0);
+        add_box(V(p.x - 0.15f, 0, p.z - 0.15f), V(p.x + 0.15f, 0.9f, p.z + 0.15f));
+        break;
+    }
+    }
+}
+static bool near_marker(v3 p, float r) {
+    for (int k = 0; k < npoi; k++) if (dist2d(poi[k].pos, p) < r) return true;
+    for (int k = 0; k < nshop; k++) if (dist2d(shops[k].door, p) < r) return true;
+    return false;
+}
+static void street_furniture(int i, int j) {
+    int d = dist_blk[i][j];
+    /* north, south, west, east sides: is there a road there? */
+    bool side[4] = {edge_ok(i, j, 0), edge_ok(i, j + 1, 0), edge_ok(i, j, 1), edge_ok(i + 1, j, 1)};
+    for (int sd = 0; sd < 4; sd++) {
+        if (!side[sd]) continue;
+        unsigned s = hashu((unsigned)(i * 7 + j * 131 + sd * 977 + 5));
+        bool along_x = sd < 2;
+        float off = 8.25f;
+        for (float t = 13; t < PITCH - 13; t += 7.5f + (s % 5)) {
+            s = hashu(s);
+            v3 p;
+            if (sd == 0) p = V(i * PITCH + t, 0, j * PITCH + off);
+            else if (sd == 1) p = V(i * PITCH + t, 0, (j + 1) * PITCH - off);
+            else if (sd == 2) p = V(i * PITCH + off, 0, j * PITCH + t);
+            else p = V((i + 1) * PITCH - off, 0, j * PITCH + t);
+            if (near_marker(p, 5)) continue;
+            int kind;
+            unsigned r = s % 100;
+            if (d == D_DOCKS || d == D_EASTGATE) kind = r < 40 ? 6 : r < 60 ? 2 : r < 75 ? 0 : -1;
+            else if (d == D_MAPLE || d == D_SEABRIGHT) kind = r < 45 ? 4 : r < 60 ? 2 : r < 70 ? 5 : -1;
+            else if (d == D_PARK) kind = r < 50 ? 1 : r < 70 ? 0 : -1;
+            else kind = r < 22 ? 0 : r < 40 ? 1 : r < 52 ? 2 : r < 72 ? 4 : r < 80 ? 5 : r < 84 ? 3 : -1;
+            if (kind < 0) continue;
+            if (kind == 4 && (sd == 0 || sd == 1)) { if (fabsf(t - PITCH / 2) < 3) continue; }
+            furniture_item(kind, p, along_x, d);
+        }
+    }
+}
+
 static void gen_block(int i, int j) {
     float x0 = i * PITCH + 9, z0 = j * PITCH + 9, x1 = (i + 1) * PITCH - 9, z1 = (j + 1) * PITCH - 9;
     float cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
@@ -487,6 +757,8 @@ static void gen_block(int i, int j) {
     int ptype = poi_block(i, j);
     if (i == 12 && j == 11) { lot_type[i][j] = LOT_PLAZA; return; } /* the Needle plaza */
     if (i == 17 && j == 4) { lot_type[i][j] = LOT_ASPH; return; }    /* the stadium */
+    int shop = shop_at_block(i, j);
+    if (shop >= 0) { lot_type[i][j] = LOT_PLAZA; build_shop(shop, x0, z0, x1, z1); return; }
     if (ptype >= 0 && ptype != POI_JOB) {
         lot_type[i][j] = ptype == POI_RESPRAY ? LOT_ASPH : LOT_PLAZA;
         Mat m;
@@ -653,8 +925,18 @@ static void build_city(void) {
     for (int k = 0; k < 7; k++) add_poi(POI_JOB, jobs[k][0], jobs[k][1]);
     for (int k = 0; k < npoi; k++)
         if (poi[k].type == POI_RESPRAY) poi[k].pos = V(poi[k].i * PITCH + PITCH / 2, 0, poi[k].j * PITCH + 9 + 7);
+    add_shop(SHOP_GAS, 5, 10, "CALDER FUEL"); add_shop(SHOP_GAS, 13, 16, "NORTHSTAR GAS"); add_shop(SHOP_GAS, 19, 8, "CALDER FUEL");
+    add_shop(SHOP_GAS, 21, 16, "NORTHSTAR GAS"); add_shop(SHOP_GAS, 10, 21, "CALDER FUEL");
+    add_shop(SHOP_STORE, 2, 6, "QUIK 24"); add_shop(SHOP_STORE, 10, 13, "CORNER MART"); add_shop(SHOP_STORE, 16, 9, "QUIK 24");
+    add_shop(SHOP_STORE, 22, 5, "CORNER MART"); add_shop(SHOP_STORE, 6, 14, "QUIK 24");
+    add_shop(SHOP_DINER, 7, 3, "SUNNY'S DINER"); add_shop(SHOP_DINER, 14, 18, "BLUE PLATE"); add_shop(SHOP_DINER, 20, 12, "SUNNY'S DINER"); add_shop(SHOP_DINER, 4, 19, "BLUE PLATE");
+    add_shop(SHOP_CLOTHES, 11, 10, "THREADS"); add_shop(SHOP_CLOTHES, 18, 13, "URBAN THREADS"); add_shop(SHOP_CLOTHES, 21, 21, "THREADS");
+    add_shop(SHOP_DEALER, 16, 6, "HARBOR MOTORS");
+    add_shop(SHOP_AUTO, 8, 20, "TORQUE WORKS"); add_shop(SHOP_AUTO, 17, 15, "TORQUE WORKS");
     for (int i = 0; i < NB; i++)
         for (int j = 0; j < NB; j++) gen_block(i, j);
+    for (int i = 0; i < NB; i++)
+        for (int j = 0; j < NB; j++) if (!(i == 12 && j == 11)) { detail_mode = true; street_furniture(i, j); detail_mode = false; }
     build_landmarks();
     /* the ground and the sea are instances too */
     Mat g = {{1, 1, 1}, PAT_GROUND, 0, 0.8f, {0, 0, 0}, 0};
