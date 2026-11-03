@@ -28,7 +28,7 @@ static void update_env(void) {
     AMB_SKY = lerp3(AMB_SKY, V(0.5f, 0.35f, 0.3f), dusk * 0.3f * day);
     AMB_GND = lerp3(V(0.02f, 0.016f, 0.014f), V(0.20f, 0.18f, 0.15f), day);
     if (rain > 0) { AMB_SKY = lerp3(AMB_SKY, mul(V(0.36f, 0.4f, 0.46f), day + 0.08f), rain * 0.6f); }
-    FOG_DEN = lerpf(0.00045f, 0.0006f, NIGHT) + rain * 0.0022f;
+    FOG_DEN = lerpf(0.00026f, 0.0004f, NIGHT) + rain * 0.0018f;
     EXPOSURE = lerpf(0.82f, 1.55f, NIGHT) * (1 + rain * 0.15f);
 }
 static void update_weather(float dt) {
@@ -108,11 +108,11 @@ static void update_wanted(float dt) {
 
 /* ================================================================== missions and activities */
 enum { MT_NONE, MT_DELIVERY, MT_TAXI, MT_RACE };
-#define NRACE 4
-#define MAXCP 14
-typedef struct { int i, j, dir; v3 start; float yaw; v3 cp[MAXCP]; int ncp; float par; const char *name; } Race;
+#define NRACE 5
+#define MAXCP 24
+typedef struct { v3 start; float yaw; v3 cp[MAXCP]; int ncp; float par; const char *name; } Race;
 static Race races[NRACE];
-static const char *RACE_NAMES[NRACE] = {"HARBOR SPRINT", "DOWNTOWN DASH", "SEABRIGHT LOOP", "IRONSIDE RUN"};
+static const char *RACE_NAMES[NRACE] = {"DOWNTOWN LA DASH", "BAY CITY SPRINT", "SAN DIEGO HARBOR RUN", "BIG SUR COAST RUN", "DESERT HIGHWAY SPRINT"};
 static struct {
     int type, stage, race, cp, streak, fare_ped, poi;
     float timer, limit, t0, dist;
@@ -128,67 +128,91 @@ static float race_best[NRACE];
 static int deliveries, fares;
 static float play_time;
 
-static void build_races(void) {
-    int starts[NRACE][3] = {{2, 24, 0}, {9, 8, 0}, {20, 2, 1}, {3, 20, 0}};
-    for (int r = 0; r < NRACE; r++) {
-        Race *R = &races[r];
-        R->name = RACE_NAMES[r];
-        R->i = starts[r][0]; R->j = starts[r][1]; R->dir = starts[r][2];
-        for (unsigned attempt = 0; attempt < 50; attempt++) {
-        unsigned seed = 1000u + (unsigned)r * 77u + attempt * 7919u;
-        static unsigned char vis[NB + 1][NB + 1];
+/* races: a random walk through a city's streets, or a highway run between two places */
+static void race_start_from(Race *R, int n, int e) {
+    float s = fminf(22, edges[e].len * 0.4f);
+    R->start = lane_pos(e, n, s, LANE_OFF);
+    R->yaw = yaw_of(edge_dir(e, n));
+}
+static void build_city_race(Race *R, int c, int si, int sj, unsigned seed0) {
+    int start = city_node(c, si, sj);
+    for (unsigned attempt = 0; attempt < 60; attempt++) {
+        static unsigned char vis[MAXNODE];
         memset(vis, 0, sizeof(vis));
-        int i = R->i, j = R->j, d = R->dir;
-        vis[i][j] = 1;
-        R->ncp = 0;
+        unsigned seed = seed0 + attempt * 7919u;
+        int n = start, prev = -1, steps = 0;
         float length = 0;
-        int edges = 0;
-        for (int step = 0; step < 60 && R->ncp < 10; step++) {
-            int opts[3], n = 0;
-            int cand[3] = {d, (d + 1) % 4, (d + 3) % 4};
-            for (int k = 0; k < 3; k++) {
-                int a = i + DX[cand[k]], b = j + DZ[cand[k]];
-                if (edge_ok(i, j, cand[k]) && !vis[a][b]) opts[n++] = cand[k];
+        R->ncp = 0;
+        vis[n] = 1;
+        int first = -1;
+        for (int k = 0; k < 80 && R->ncp < 10; k++) {
+            int opts[5], no = 0, straight = -1;
+            float bd = -2;
+            for (int q = 0; q < nodes[n].deg; q++) {
+                int e = nodes[n].e[q], m = edge_other(e, n);
+                if (vis[m] || nodes[m].city != c) continue;
+                opts[no++] = e;
+                if (prev >= 0) { float d = dot(edge_dir(prev, edge_other(prev, n)), edge_dir(e, n)); if (d > bd) { bd = d; straight = e; } }
             }
-            if (!n) break;
+            if (!no) break;
             seed = hashu(seed);
-            int pick = step == 0 || ((seed % 100) < 55 && edge_ok(i, j, d) && !vis[i + DX[d]][j + DZ[d]]) ? d : opts[seed % (unsigned)n];
-            if (!edge_ok(i, j, pick) || vis[i + DX[pick]][j + DZ[pick]]) pick = opts[seed % (unsigned)n];
-            d = pick;
-            i += DX[d]; j += DZ[d];
-            vis[i][j] = 1;
-            length += PITCH;
-            edges++;
-            if (edges >= 2 + (int)(hashu(seed + 5) % 2)) { R->cp[R->ncp++] = node_pos(i, j); edges = 0; }
+            int e = (straight >= 0 && seed % 100 < 55) ? straight : opts[seed % (unsigned)no];
+            if (first < 0) first = e;
+            length += edges[e].len;
+            n = edge_other(e, n);
+            vis[n] = 1;
+            prev = e;
+            if (++steps >= 2 + (int)(hashu(seed + 5) % 2)) { R->cp[R->ncp++] = nodes[n].p; steps = 0; }
         }
-        R->par = length;
-        if (R->ncp >= 9) break;
-        }
-        float length = R->par;
-        R->start = lane_pt(R->i, R->j, R->dir, 22, LANE_OFF);
-        R->yaw = yaw_of(dir_vec(R->dir));
-        R->par = length / 24.0f + 8;
+        if (R->ncp >= 9 && first >= 0) { race_start_from(R, start, first); R->par = length / 24.0f + 8; return; }
     }
 }
+static void build_route_race(Race *R, int from, int to, int every) {
+    Route r = {0};
+    route_build(&r, to);
+    int n = from, k = 0, prev = -1;
+    float length = 0;
+    R->ncp = 0;
+    while (n != to && k < 4000 && R->ncp < MAXCP) {
+        int e = route_next_edge(&r, n, prev);
+        if (e < 0) break;
+        if (k == 0) race_start_from(R, n, e);
+        length += edges[e].len;
+        n = edge_other(e, n);
+        prev = e;
+        if (++k % every == 0) R->cp[R->ncp++] = nodes[n].p;
+    }
+    if (R->ncp < MAXCP) R->cp[R->ncp++] = nodes[to].p;
+    R->par = length / 30.0f + 8;
+    free(r.d);
+}
+static void build_races(void) {
+    for (int r = 0; r < NRACE; r++) races[r].name = RACE_NAMES[r];
+    build_city_race(&races[0], C_LA, 12, 8, 1000);
+    build_city_race(&races[1], C_SF, 6, 5, 2000);
+    build_city_race(&races[2], C_SD, 2, 3, 3000);
+    build_route_race(&races[3], city_node(C_SLO, 0, 2), city_node(C_MON, 2, 4), 4);
+    build_route_race(&races[4], city_node(C_PS, 5, 2), find_node_near(7560, 7900, 4) >= 0 ? find_node_near(7560, 7900, 4) : city_node(C_PS, 5, 2), 4);
+}
+/* lost tapes: hidden near roads all over the state */
 static void build_tapes(void) {
     srand(4242);
     int n = 0, tries = 0;
-    while (n < NTAPE && tries < 100000) {
+    while (n < NTAPE && tries < 200000) {
         tries++;
         v3 p;
-        float r = frand();
-        if (r < 0.62f) { /* inside city blocks: alleys, yards, plazas */
-            int bi = rand() % NB, bj = rand() % NB;
-            p = V(bi * PITCH + 9 + frand() * 46, 0, bj * PITCH + 9 + frand() * 46);
-        } else if (r < 0.8f) { p = V(CITY + 20 + frand() * 140, 0, frand() * CITY); }
-        else if (r < 0.9f) { p = V(frand() * DOCK_X, 0, CITY + 20 + frand() * 170); }
-        else { p = V(-90 + frand() * 80, 0, frand() * CITY); }
-        p.y = ground_at(p.x, p.z, 50, 0.3f);
-        if (p.y > 0.7f || water_at(p.x, p.z) || p.y < WATER_Y + 0.3f) continue;
+        if (frand() < 0.45f) { int c = rand() % NCITY; City *C = &cities[c]; p = V(C->x0 + 9 + frand() * (C->nx * PITCH - 18), 0, C->z0 + 9 + frand() * (C->nz * PITCH - 18)); }
+        else p = V(frand() * MAPX, 0, frand() * MAPZ);
+        float d;
+        int e = nearest_edge(p, 140, &d, NULL);
+        if (e < 0 || d < 12) continue;
+        p.y = ground_at(p.x, p.z, terrain_h(p.x, p.z) + 40, 0.3f);
+        if (water_at(p.x, p.z) || p.y < water_level_at(p.x, p.z) + 0.3f) continue;
+        float hx = terrain_h(p.x + 3, p.z) - terrain_h(p.x, p.z);
+        if (fabsf(hx) > 1.2f) continue;
         if (point_blocked(add(p, V(0, 0.1f, 0)), 1.0f, 1.8f)) continue;
-        if (on_road(p.x, p.z, 1)) continue;
         bool close = false;
-        for (int k = 0; k < n; k++) if (dist2d(tapes[k], p) < 150) close = true;
+        for (int k = 0; k < n; k++) if (dist2d(tapes[k], p) < 300) close = true;
         if (close) continue;
         tapes[n++] = p;
     }
@@ -202,17 +226,17 @@ static int nearest_poi(int type, v3 p) {
     return best;
 }
 static v3 random_destination(v3 from, float dmin, float dmax) {
-    for (int t = 0; t < 400; t++) {
-        int bi = rand() % NB, bj = rand() % NB;
-        v3 p = perim_pt(bi, bj, frand() * 4 * (PITCH - 2 * WALK));
+    for (int t = 0; t < 1500; t++) {
+        int c = rand() % NCITY;
+        City *C = &cities[c];
+        v3 p = perim_pt(c, rand() % C->nx, rand() % C->nz, frand() * 4 * (PITCH - 2 * WALK));
         float d = dist2d(p, from);
         if (d < dmin || d > dmax) continue;
-        int i, j;
-        nearest_road_node(p, &i, &j);
-        if (dist2d(node_pos(i, j), p) > 40) continue;
         return p;
     }
-    return V(CITY / 2, 0, CITY / 2 + WALK);
+    int c = city_at(from.x, from.z, 400);
+    if (c < 0) c = C_LA;
+    return perim_pt(c, 0, 0, 3);
 }
 static void pay(int amount) { G.money += amount; audio_play2d(SFX_CASH, 0.8f, 1); }
 static void mission_end(bool ok, const char *why) {
@@ -226,9 +250,9 @@ static void start_delivery(int poi_idx) {
     MS.type = MT_DELIVERY;
     MS.stage = 0;
     MS.poi = poi_idx;
-    MS.target = random_destination(player_target_pos(), 450, 1200);
+    MS.target = random_destination(player_target_pos(), 450, frand() < 0.6f ? 1100 : 2600);
     MS.dist = dist2d(MS.target, player_target_pos());
-    MS.limit = MS.dist / 12.5f + 25;
+    MS.limit = MS.dist / (MS.dist > 1200 ? 13.0f : 11.5f) + 35;
     MS.timer = MS.limit;
     bigtext("COURIER JOB", "DELIVER THE PACKAGE BEFORE TIME RUNS OUT", 3);
     audio_play2d(SFX_PICKUP, 0.8f, 1);
@@ -238,12 +262,12 @@ static void next_fare(void) {
     for (int t = 0; t < 60; t++) {
         float a = frand() * 6.283f, d = 140 + frand() * 160;
         v3 p = add(fp, V(cosf(a) * d, 0, sinf(a) * d));
-        int bi = (int)floorf(p.x / PITCH), bj = (int)floorf(p.z / PITCH);
-        if (bi < 0 || bj < 0 || bi >= NB || bj >= NB) continue;
+        int c, bi, bj;
+        if (!block_of(p, &c, &bi, &bj)) continue;
         float s = frand() * 4 * (PITCH - 2 * WALK);
-        Ped *q = spawn_ped(perim_pt(bi, bj, s), false);
+        Ped *q = spawn_ped(perim_pt(c, bi, bj, s), false);
         if (!q) return;
-        q->bi = bi; q->bj = bj; q->s = s;
+        q->city = c; q->bi = bi; q->bj = bj; q->s = s;
         q->state = PS_HAIL;
         q->fare = 1;
         MS.fare_ped = (int)(q - ped);
@@ -365,7 +389,7 @@ static void update_missions(float dt) {
                 bigtext("FARE COMPLETE", b, 2.5f);
                 audio_play2d(SFX_CHECKPOINT, 0.9f, 1.2f);
                 Ped *q = spawn_ped(MS.target, false);
-                if (q) { q->bi = (int)clampf(floorf(q->pos.x / PITCH), 0, NB - 1); q->bj = (int)clampf(floorf(q->pos.z / PITCH), 0, NB - 1); q->state = PS_RETURN; q->target = q->pos; }
+                if (q) { q->state = PS_RETURN; q->target = q->pos; }
                 MS.stage = 0;
                 MS.fare_ped = -1;
                 next_fare();
@@ -454,7 +478,7 @@ static unsigned outfits_owned = 1;
 static struct { int model; v3 col; } OWN = {VM_MUSCLE, {0.55f, 0.06f, 0.05f}};
 static const struct { int model, price; } DEALER_STOCK[] = {{VM_SEDAN, 4500}, {VM_PICKUP, 7000}, {VM_VAN, 7500}, {VM_TAXI, 9000}, {VM_MUSCLE, 16000}, {VM_SPORTS, 29000}};
 
-enum { IT_LEAVE, IT_HEAL, IT_ENERGY, IT_LOTTERY, IT_OUTFIT, IT_CAR, IT_ENGINE, IT_BRAKES, IT_TIRES, IT_ARMOR, IT_REPAIR, IT_PAINT, IT_FUEL };
+enum { IT_LEAVE, IT_HEAL, IT_ENERGY, IT_LOTTERY, IT_OUTFIT, IT_CAR, IT_ENGINE, IT_BRAKES, IT_TIRES, IT_ARMOR, IT_REPAIR, IT_PAINT, IT_FUEL, IT_SLEEP };
 typedef struct { char label[40]; char desc[64]; int price, kind, arg; bool ok; } Item;
 static Item items[16];
 static int nitems, shop_sel, shop_cur = -1;
@@ -533,6 +557,32 @@ static void build_items(void) {
         break;
     }
     }
+    if (S->type == SHOP_HOTEL) {
+        snprintf(b, sizeof(b), "ONE NIGHT  %d STARS", (int)S->stars);
+        add_item(b, 40 + (int)S->stars * 35, IT_SLEEP, 0, "SLEEP UNTIL 08:00 - SAVES THE GAME", true);
+        add_item("ROOM SERVICE DINNER", 28, IT_HEAL, 60, "+60 HEALTH", true);
+        add_item("MINIBAR SODA", 6, IT_ENERGY, 20, "SPRINT BOOST 20 SECONDS", true);
+    }
+    if (S->type == SHOP_FOOD) {
+        static const struct { const char *n; int p, h; } M[10][4] = {
+            {{"TACOS AL PASTOR", 6, 25}, {"CARNE ASADA BURRITO", 9, 40}, {"CHURROS", 4, 10}, {"HORCHATA", 3, -20}},
+            {{"FISH TACOS", 8, 30}, {"CLAM CHOWDER BOWL", 9, 35}, {"GRILLED SALMON", 22, 70}, {"LEMONADE", 3, -15}},
+            {{"PORK DUMPLINGS", 8, 30}, {"CHOW MEIN", 10, 40}, {"ROAST DUCK", 26, 100}, {"JASMINE TEA", 3, -20}},
+            {{"MARGHERITA PIZZA", 14, 45}, {"LASAGNA", 16, 55}, {"TIRAMISU", 7, 15}, {"ESPRESSO", 3, -30}},
+            {{"TRI-TIP SANDWICH", 13, 45}, {"RIBEYE STEAK", 34, 100}, {"BAKED POTATO", 6, 20}, {"ICED TEA", 3, -15}},
+            {{"CHEESEBURGER", 8, 35}, {"FRIES", 4, 12}, {"DOUBLE BURGER", 12, 55}, {"MILKSHAKE", 5, -25}},
+            {{"BULGOGI", 16, 50}, {"BIBIMBAP", 14, 45}, {"KIMCHI PANCAKE", 9, 25}, {"BARLEY TEA", 3, -15}},
+            {{"AVOCADO TOAST", 11, 35}, {"BREAKFAST BURRITO", 10, 40}, {"FRUIT SMOOTHIE", 7, 20}, {"COLD BREW", 4, -30}},
+            {{"BRISKET PLATE", 18, 60}, {"PORK RIBS", 22, 70}, {"CORNBREAD", 4, 12}, {"SWEET TEA", 3, -15}},
+            {{"TASTING MENU", 85, 100}, {"ARTISAN CHEESE BOARD", 24, 40}, {"SEASONAL SALAD", 16, 30}, {"SPARKLING WATER", 5, -10}},
+        };
+        int m = S->menu < 0 || S->menu > 9 ? 7 : S->menu;
+        for (int k = 0; k < 4; k++) {
+            char dd[64];
+            if (M[m][k].h > 0) snprintf(dd, sizeof(dd), "+%d HEALTH", M[m][k].h); else snprintf(dd, sizeof(dd), "SPRINT BOOST %d SECONDS", -M[m][k].h);
+            add_item(M[m][k].n, M[m][k].p, M[m][k].h > 0 ? IT_HEAL : IT_ENERGY, M[m][k].h > 0 ? M[m][k].h : -M[m][k].h, dd, true);
+        }
+    }
     add_item("LEAVE", 0, IT_LEAVE, 0, "", true);
     if (shop_sel >= nitems) shop_sel = nitems - 1;
 }
@@ -584,6 +634,14 @@ static void shop_buy(void) {
     case IT_REPAIR: if (c) { c->hp = it->price > 0 && shops[shop_cur].type == SHOP_GAS ? fminf(SPEC[c->model].hp, c->hp + SPEC[c->model].hp * 0.5f) : SPEC[c->model].hp; c->fire_t = 0; } shop_say("ALL FIXED"); break;
     case IT_PAINT: if (c) { c->col = rand_paint(); if (c->owned) OWN.col = c->col; } shop_say("FRESH PAINT"); break;
     case IT_FUEL: if (c) c->fuel = 1; shop_say("TANK FULL"); break;
+    case IT_SLEEP: {
+        extern void save_game(void);
+        G.tod = 8; PL.hp = 100; PL.stamina = 1;
+        save_game();
+        G.state = ST_SHOP;
+        shop_say("GOOD MORNING - GAME SAVED");
+        break;
+    }
     }
     if (it->price > 0) audio_play2d(SFX_CASH, 0.8f, 1); else audio_play2d(SFX_UI, 0.7f, 1);
     build_items();
@@ -628,15 +686,13 @@ static bool police_near(v3 p, float r) {
 }
 static void traffic_laws(Car *c, float dt) {
     PL.law_cool -= dt;
-    int ni, nj;
-    nearest_node(c->pos, &ni, &nj);
-    v3 np = node_pos(ni, nj);
-    bool inside = fabsf(c->pos.x - np.x) < 5 && fabsf(c->pos.z - np.z) < 5 && node_degree(ni, nj) >= 3;
+    int nn = city_node_near(c->pos);
+    v3 np = nn >= 0 ? nodes[nn].p : V(-9999, 0, -9999);
+    bool inside = nn >= 0 && fabsf(c->pos.x - np.x) < 5 && fabsf(c->pos.z - np.z) < 5 && nodes[nn].light;
     float sp = fabsf(car_speed(c));
     if (G.stars == 0 && PL.law_cool <= 0) {
         if (inside && !PL.in_node && sp > 4) {
-            int d = ((int)floorf(wrap_pi(c->yaw - 1.5708f) / 1.5708f + 0.5f) + 4) % 4;
-            if (light_state(ni, nj, d) == 2 && police_near(c->pos, 60)) { add_heat(1.0f); message("YOU RAN A RED LIGHT IN FRONT OF THE POLICE", 3); PL.law_cool = 15; }
+            if (light_state(nn, fwd_of(c->yaw)) == 2 && police_near(c->pos, 60)) { add_heat(1.0f); message("YOU RAN A RED LIGHT IN FRONT OF THE POLICE", 3); PL.law_cool = 15; }
         }
         if (sp > 25 && on_road(c->pos.x, c->pos.z, 0) && police_near(c->pos, 40)) { add_heat(1.0f); message("SPEEDING - THE POLICE CLOCKED YOU", 3); PL.law_cool = 15; }
     }
@@ -693,8 +749,8 @@ static void enter_nearest_car(void) {
     if (c->driver == DRV_AI || c->driver == DRV_COP) {
         Ped *p = spawn_ped(add(c->pos, mul(r, -(SPEC[c->model].W / 2 + 0.8f))), c->driver == DRV_COP);
         if (p) {
-            p->bi = (int)clampf(floorf(p->pos.x / PITCH), 0, NB - 1);
-            p->bj = (int)clampf(floorf(p->pos.z / PITCH), 0, NB - 1);
+            block_of(p->pos, &p->city, &p->bi, &p->bj);
+            if (p->city < 0) p->city = 0;
             if (c->driver == DRV_COP) { p->state = PS_COP; p->speed = 5.6f; }
             else { ped_knock(p, mul(r, -3)); p->timer = 1.0f; }
         }
@@ -774,7 +830,8 @@ static void update_player(const Input *in, float dt) {
     }
     /* on foot */
     PL.air_t = 0;
-    bool water = water_at(PL.pos.x, PL.pos.z) && PL.pos.y < WATER_Y + 0.4f;
+    float wl = water_level_at(PL.pos.x, PL.pos.z);
+    bool water = water_at(PL.pos.x, PL.pos.z) && PL.pos.y < wl + 0.4f;
     PL.swim = water;
     float g = ground_at(PL.pos.x, PL.pos.z, PL.pos.y, 0.3f);
     if (PL.down_t > 0) {
@@ -787,8 +844,8 @@ static void update_player(const Input *in, float dt) {
     }
     v3 cf = fwd_of(PL.cam_yaw), cr = right_of(PL.cam_yaw);
     v3 wish = add(mul(cf, in->fwd), mul(cr, in->side));
-    float wl = len2d(wish);
-    if (wl > 1) wish = mul(wish, 1 / wl);
+    float wishl = len2d(wish);
+    if (wishl > 1) wish = mul(wish, 1 / wishl);
     /* stamina: sprinting tires you out unless you had an energy drink */
     PL.energy_t = fmaxf(0, PL.energy_t - dt);
     bool moving = len2d(PL.vel) > 1;
@@ -802,14 +859,14 @@ static void update_player(const Input *in, float dt) {
     float acc = PL.ground || water ? 14 : 3;
     PL.vel.x += (target.x - PL.vel.x) * fminf(1, acc * dt);
     PL.vel.z += (target.z - PL.vel.z) * fminf(1, acc * dt);
-    if (wl > 0.1f) PL.yaw += wrap_pi(yaw_of(wish) - PL.yaw) * fminf(1, dt * 10);
+    if (wishl > 0.1f) PL.yaw += wrap_pi(yaw_of(wish) - PL.yaw) * fminf(1, dt * 10);
     if (water) {
         PL.vel.y = 0;
         PL.pos.x += PL.vel.x * dt;
         PL.pos.z += PL.vel.z * dt;
-        PL.pos.y += (WATER_Y - 1.15f - PL.pos.y) * fminf(1, dt * 4);
+        PL.pos.y += (wl - 1.15f - PL.pos.y) * fminf(1, dt * 4);
         float g2 = ground_at(PL.pos.x, PL.pos.z, PL.pos.y + 1.2f, 0.3f);
-        if (g2 > WATER_Y - 0.6f) PL.pos.y = fmaxf(PL.pos.y, g2);
+        if (g2 > wl - 0.6f) PL.pos.y = fmaxf(PL.pos.y, g2);
         PL.ground = false;
     } else {
         if (in->jump && PL.ground) { PL.vel.y = 5.6f; PL.ground = false; }
@@ -869,11 +926,11 @@ static void start_wasted(void) {
 }
 static void respawn_at(int type) {
     int k = nearest_poi(type, player_target_pos());
-    v3 at = k >= 0 ? poi[k].pos : V(CITY / 2, 0, CITY / 2);
+    v3 at = k >= 0 ? poi[k].pos : V(4900, 6, 7400);
     if (PL.car >= 0) { car[PL.car].driver = DRV_NONE; PL.car = -1; }
     clear_police();
     PL.pos = add(at, V(0, 0, -1.5f));
-    PL.pos.y = 0;
+    PL.pos.y = at.y + 0.2f;
     PL.vel = V(0, 0, 0);
     PL.hp = 100;
     PL.down_t = 0;
@@ -986,60 +1043,58 @@ static v3 poi_color(int t) {
 }
 static const char POI_LETTER[POI_N] = {'S', 'P', 'H', 'R', 'J', 'X'};
 static Route gps_route;
-static int gps_ti = -1, gps_tj = -1;
+static int gps_ti = -1;
 static bool mission_target(v3 *t) {
     if (MS.type == MT_NONE) return false;
     if (MS.type == MT_RACE && MS.stage == 0) return false;
     *t = MS.target;
     return true;
 }
+/* inverse of map_xf: screen -> world */
+static v3 map_inv(float sx, float sy) {
+    float lx = (sx - MAPV.ox) / MAPV.scale, lz = (sy - MAPV.oy) / MAPV.scale;
+    float cs = cosf(MAPV.rot), sn = sinf(MAPV.rot);
+    return add(MAPV.c, V(lx * cs - lz * sn, 0, lx * sn + lz * cs));
+}
+static void map_tex_vert(float sx, float sy, float a) {
+    v3 w = map_inv(sx, sy);
+    hvert(sx, sy, (w.x - WX0) / (WX1 - WX0), (w.z - WZ0) / (WZ1 - WZ0), 1, 1, 1, a);
+}
 static void draw_map_contents(bool full, float t) {
-    v3 water = V(0.05f, 0.13f, 0.2f);
-    hrect(MAPV.ox - MAPV.size / 2, MAPV.oy - MAPV.size / 2, MAPV.size, MAPV.size, water.x, water.y, water.z, 0.92f);
-    /* land masses */
-    map_rect(-60, -60, CITY + 60, CITY + 60, V(0.16f, 0.24f, 0.13f), 1);
-    map_rect(CITY, -40, CITY + 110, CITY + 40, V(0.55f, 0.50f, 0.36f), 1);
-    map_rect(-20, CITY, DOCK_X, CITY + 52, V(0.30f, 0.29f, 0.27f), 1);
-    for (int k = 0; k < 3; k++) { float x = k == 0 ? 230 : k == 1 ? 560 : 900; map_rect(x - 16, CITY + 52, x + 16, CITY + 190, V(0.30f, 0.29f, 0.27f), 1); }
-    map_rect(CITY + 96, 689, CITY + 330, 711, V(0.45f, 0.32f, 0.2f), 1);
-    map_rect(-9, -9, CITY + 9, CITY + 9, V(0.12f, 0.12f, 0.13f), 1);
+    /* the baked map picture, rotated with the view */
+    hud_flush();
+    float h = MAPV.size / 2;
+    float x0 = MAPV.ox - h, y0 = MAPV.oy - h, x1 = MAPV.ox + h, y1 = MAPV.oy + h;
+    hgrow(6);
+    map_tex_vert(x0, y0, 0.95f); map_tex_vert(x1, y0, 0.95f); map_tex_vert(x1, y1, 0.95f);
+    map_tex_vert(x0, y0, 0.95f); map_tex_vert(x1, y1, 0.95f); map_tex_vert(x0, y1, 0.95f);
+    hud_tex_override = tex_map;
+    hud_flush();
+    hud_tex_override = 0;
     float view = MAPV.size / MAPV.scale * 0.75f;
-    for (int i = 0; i < NB; i++)
-        for (int j = 0; j < NB; j++) {
-            v3 c = V(i * PITCH + PITCH / 2, 0, j * PITCH + PITCH / 2);
-            if (!full && dist2d(c, MAPV.c) > view + 50) continue;
-            v3 col = DCOL[dist_blk[i][j]];
-            float e = 9;
-            /* merge park blocks across the removed roads */
-            float x0 = i * PITCH + (edge_ok(i, j, 1) || i == 0 ? e : -e), x1 = (i + 1) * PITCH - (edge_ok(i + 1, j, 1) ? e : -e);
-            float z0 = j * PITCH + (edge_ok(i, j, 0) || j == 0 ? e : -e), z1 = (j + 1) * PITCH - (edge_ok(i, j + 1, 0) ? e : -e);
-            map_rect(x0, z0, x1, z1, col, 1);
-        }
-    /* gps route */
+    /* gps route over the road graph */
     v3 tgt;
     if (mission_target(&tgt)) {
-        int ti, tj;
-        nearest_road_node(tgt, &ti, &tj);
-        if (ti != gps_ti || tj != gps_tj) { route_build(&gps_route, ti, tj); gps_ti = ti; gps_tj = tj; }
-        int i, j;
-        nearest_road_node(player_target_pos(), &i, &j);
-        float px, py, qx, qy;
+        int tn = nearest_road_node(tgt);
+        if (tn != gps_ti) { route_build(&gps_route, tn); gps_ti = tn; }
+        int n = nearest_road_node(player_target_pos()), prev = -1;
+        float px, py, qx, qy, w = (full ? 2.5f : 3.5f) * UI * 0.5f;
         map_xf(player_target_pos(), &px, &py);
-        map_xf(node_pos(i, j), &qx, &qy);
-        hline(px, py, qx, qy, 3.5f * UI * 0.5f, 1, 0.8f, 0.1f, 0.9f);
-        int prev = -1;
-        for (int s = 0; s < 80 && gps_route.d[i][j] > 0 && gps_route.d[i][j] < 9999; s++) {
-            int d = route_next_dir(&gps_route, i, j, prev >= 0 ? (prev + 2) % 4 : -1);
-            if (d < 0) break;
-            map_xf(node_pos(i, j), &px, &py);
-            i += DX[d]; j += DZ[d];
-            map_xf(node_pos(i, j), &qx, &qy);
-            hline(px, py, qx, qy, 3.5f * UI * 0.5f, 1, 0.8f, 0.1f, 0.9f);
-            prev = d;
+        map_xf(nodes[n].p, &qx, &qy);
+        hline(px, py, qx, qy, w, 1, 0.8f, 0.1f, 0.9f);
+        for (int k = 0; k < 3000 && gps_route.d[n] > 0 && gps_route.d[n] < 30000; k++) {
+            int e = route_next_edge(&gps_route, n, prev);
+            if (e < 0) break;
+            int m = edge_other(e, n);
+            map_xf(nodes[n].p, &px, &py);
+            map_xf(nodes[m].p, &qx, &qy);
+            hline(px, py, qx, qy, w, 1, 0.8f, 0.1f, 0.9f);
+            n = m;
+            prev = e;
         }
-        map_xf(node_pos(i, j), &px, &py);
+        map_xf(nodes[n].p, &px, &py);
         map_xf(tgt, &qx, &qy);
-        hline(px, py, qx, qy, 3.5f * UI * 0.5f, 1, 0.8f, 0.1f, 0.9f);
+        hline(px, py, qx, qy, w, 1, 0.8f, 0.1f, 0.9f);
     }
     float br = 4.2f * UI * 0.55f;
     for (int k = 0; k < npoi; k++) {
@@ -1108,6 +1163,7 @@ static void draw_minimap(float t) {
     MAPV.rot = cam.fwd.x == 0 && cam.fwd.z == 0 ? 0 : -yaw_of(cam.fwd) + 0;
     /* rotation so that camera forward points up: rotate world by -yaw */
     MAPV.rot = yaw_of(cam.fwd);
+    MAPV.scale = size / (380 + sp * 8);
     hud_flush();
     glEnable(GL_SCISSOR_TEST);
     glScissor((int)(MAPV.ox - size / 2), (int)(rh - (MAPV.oy + size / 2)), (int)size, (int)size);
@@ -1133,17 +1189,21 @@ static void draw_full_map(float t) {
     MAPV.size = size;
     MAPV.ox = rw / 2.0f;
     MAPV.oy = rh / 2.0f + 10 * UI * 0.5f;
-    MAPV.c = V(CITY / 2 + 60, 0, CITY / 2 + 40);
-    MAPV.scale = size / (CITY + 480);
+    MAPV.c = V((WX0 + WX1) / 2, 0, (WZ0 + WZ1) / 2);
+    MAPV.scale = size / (WZ1 - WZ0);
     MAPV.rot = 0;
     draw_map_contents(true, t);
-    htext("PORT CALDER", rw / 2.0f, MAPV.oy - size / 2 - 22 * UI * 0.5f, UI * 0.9f, 1, 1, 1, 1, 1);
-    /* district labels */
-    struct { int d; float x, z; } lab[] = {{D_CENTER, 12.5f, 11.5f}, {D_MIDTOWN, 15.5f, 3}, {D_MAPLE, 3.5f, 10}, {D_PARK, 5, 6}, {D_DOCKS, 7.5f, 21.8f}, {D_SEABRIGHT, 22, 7}, {D_EASTGATE, 18, 18}, {D_OLDTOWN, 4.5f, 16}};
-    for (size_t k = 0; k < sizeof(lab) / sizeof(lab[0]); k++) {
+    htext("CALIFORNIA", rw / 2.0f, MAPV.oy - size / 2 - 22 * UI * 0.5f, UI * 0.9f, 1, 1, 1, 1, 1);
+    for (int c = 0; c < NCITY; c++) {
         float x, y;
-        map_xf(V(lab[k].x * PITCH, 0, lab[k].z * PITCH), &x, &y);
-        htext(DNAME[lab[k].d], x, y, UI * 0.45f, 1, 1, 1, 0.85f, 1);
+        map_xf(V(cities[c].x0 + cities[c].nx * PITCH / 2, 0, cities[c].z0 - 30), &x, &y);
+        htext(cities[c].name, x, y - 10 * UI * 0.45f, UI * 0.42f, 1, 1, 1, 0.95f, 1);
+    }
+    for (int k = 0; k < NP(REGIONS); k++) {
+        if (REGIONS[k].r < 300 || strstr(REGIONS[k].name, "BRIDGE")) continue;
+        float x, y;
+        map_xf(V(REGIONS[k].x, 0, REGIONS[k].z), &x, &y);
+        htext(REGIONS[k].name, x, y, UI * 0.33f, 0.85f, 0.95f, 0.85f, 0.6f, 1);
     }
     float lx = MAPV.ox + size / 2 + 12, ly = MAPV.oy - size / 2;
     if (lx + 150 > rw) lx = 10;
@@ -1171,7 +1231,7 @@ static void draw_hud(float t) {
         hrect(0, rh * 0.30f, (float)rw, 150 * UI * 0.5f, 0, 0, 0, 0.35f * a);
         htext("PORT CALDER", rw / 2.0f + 3, rh * 0.33f + 3, UI * 4.2f, 0.9f, 0.2f, 0.5f, a, 1);
         htext("PORT CALDER", rw / 2.0f, rh * 0.33f, UI * 4.2f, 1, 0.85f, 0.5f, a, 1);
-        htext("AN OPEN-CITY DRIVING SANDBOX", rw / 2.0f, rh * 0.33f + 40 * UI, UI * 0.8f, 0.85f, 0.9f, 1, a, 1);
+        htext("AN OPEN-WORLD CALIFORNIA ROAD TRIP", rw / 2.0f, rh * 0.33f + 40 * UI, UI * 0.8f, 0.85f, 0.9f, 1, a, 1);
         if (fmodf(t, 1.2f) < 0.85f) htext("PRESS ENTER", rw / 2.0f, rh * 0.62f, UI * 1.1f, 1, 1, 1, a, 1);
         htext("WASD DRIVE/WALK  MOUSE CAMERA  F ENTER/EXIT  SPACE HANDBRAKE/JUMP  SHIFT SPRINT", rw / 2.0f, rh - 46 * UI * 0.5f, UI * 0.5f, 0.8f, 0.8f, 0.8f, a, 1);
         htext("H HORN  Q/E RADIO  T TAXI DUTY  TAB MAP  C CAMERA  ESC PAUSE  F11 FULLSCREEN  M MUTE", rw / 2.0f, rh - 30 * UI * 0.5f, UI * 0.5f, 0.8f, 0.8f, 0.8f, a, 1);
@@ -1264,7 +1324,7 @@ static void draw_hud(float t) {
     int d = district_at(player_target_pos());
     if (d != last_d) { last_d = d; dt_t = 3; }
     dt_t -= 1 / 60.0f;
-    if (dt_t > 0 && G.state == ST_PLAY) htext(DNAME[d], rx, rh - 130 * s, s * 2.0f, 1, 1, 1, clampf(dt_t, 0, 1), 2);
+    if (dt_t > 0 && G.state == ST_PLAY) htext(dname[d], rx, rh - 130 * s, s * 2.0f, 1, 1, 1, clampf(dt_t, 0, 1), 2);
     if (G.bust_t > 0.2f) htext("STOP RESISTING!", rw / 2.0f, rh * 0.6f, s * 1.6f, 0.5f, 0.7f, 1, 0.9f, 1);
     draw_minimap(t);
     if (G.state == ST_BUSTED || G.state == ST_WASTED) {

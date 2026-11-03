@@ -152,9 +152,9 @@ static const char *VS_LIT =
 
 static const char *FS_LIT =
     "in vec3 vPos, vNrm, vObj, vONrm, vSize; flat in vec4 vBase, vMat, vEmis; out vec4 frag;\n"
-    "uniform vec3 uCam, uLightDir, uLightCol, uAmbSky, uAmbGnd; uniform float uFogDen, uPitch, uCityN, uWater;\n"
+    "uniform vec3 uCam, uLightDir, uLightCol, uAmbSky, uAmbGnd; uniform float uFogDen, uWater;\n"
     "uniform int uNumLights; uniform vec4 uLightPos[32]; uniform vec3 uLightCols[32];\n"
-    "uniform mat4 uLightVP; uniform sampler2DShadow uShadow; uniform sampler2D uCity;\n"
+    "uniform mat4 uLightVP; uniform sampler2DShadow uShadow;\n"
     "const float PI=3.14159265;\n"
     "float D_GGX(float nh,float a){float a2=a*a; float d=nh*nh*(a2-1.0)+1.0; return a2/(PI*d*d);}\n"
     "float G_S(float nv,float nl,float r){float k=(r+1.0)*(r+1.0)/8.0; return (nv/(nv*(1.0-k)+k))*(nl/(nl*(1.0-k)+k));}\n"
@@ -169,56 +169,63 @@ static const char *FS_LIT =
     " float sum=0.0; vec2 t=1.0/vec2(textureSize(uShadow,0));\n"
     " for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++) sum+=texture(uShadow,vec3(p.xy+vec2(x,y)*t,p.z-0.0006));\n"
     " return mix(sum/9.0,1.0,e);}\n"
-    "int cityFlags(ivec2 n){ int N=int(uCityN); if(n.x<0||n.y<0||n.x>N||n.y>N) return 0; return int(texelFetch(uCity,n,0).g*255.0+0.5); }\n"
-    "int lotType(ivec2 c){ int N=int(uCityN); if(c.x<0||c.y<0||c.x>=N||c.y>=N) return -1; return int(texelFetch(uCity,c,0).r*255.0+0.5); }\n"
-    /* the whole city floor: roads, markings, sidewalks, lots, beach, lamp pools */
-    "void ground(inout vec3 alb,inout float rough,inout float met,inout vec3 emis){\n"
-    " vec2 q=vPos.xz; float P=uPitch; float NP=uCityN*P; float wet=uRain*(0.45+0.55*smoothstep(0.35,0.7,vnoise(vec3(q*0.12,0.5))));\n"
-    " float n1=vnoise(vec3(q*0.9,0.0)), n2=vnoise(vec3(q*0.11,3.0));\n"
-    " bool inside=q.x>-9.0&&q.y>-9.0&&q.x<NP+9.0&&q.y<NP+9.0;\n"
-    " if(!inside){\n"
-    "  if(vPos.y<-0.03){ float wd=smoothstep(uWater+0.6,uWater-0.2,vPos.y); alb=mix(vec3(0.62,0.55,0.40),vec3(0.36,0.31,0.22),wd)*(0.9+0.2*n1); rough=mix(0.9,0.35,wd); }\n"
-    "  else if(q.y>NP+9.0&&q.x<1150.0){ alb=vec3(0.30,0.29,0.27)*(0.75+0.35*n2)*(0.9+0.15*n1); rough=0.85;\n"
-    "   vec2 lf=abs(fract(q/vec2(18.0,9.0))-0.5); if(max(lf.x*0.0,lf.y)>0.485) alb=vec3(0.7,0.55,0.1); }\n"
-    "  else { alb=vec3(0.10,0.19,0.05)*(0.7+0.5*n2)*(0.85+0.3*n1); rough=0.95; }\n"
-    "  rough=mix(rough,0.15,wet*0.6); alb*=1.0-0.3*wet; return; }\n"
-    " vec2 g=q/P; ivec2 c=ivec2(floor(g)); vec2 f=(g-floor(g))*P; vec2 dl=min(f,P-f);\n"
-    " ivec2 nn=ivec2(floor(g+0.5)); vec2 so=q-vec2(nn)*P;\n"
-    " bool segV=(cityFlags(ivec2(nn.x,c.y))&2)!=0, segH=(cityFlags(ivec2(c.x,nn.y))&1)!=0;\n"
-    " bool node=cityFlags(nn)!=0||(cityFlags(nn-ivec2(1,0))&1)!=0||(cityFlags(nn-ivec2(0,1))&2)!=0;\n"
-    " bool rV=dl.x<5.0&&segV, rH=dl.y<5.0&&segH, rI=dl.x<5.0&&dl.y<5.0&&node;\n"
-    " if(rV||rH||rI){\n"
-    "  alb=vec3(0.052)*(0.8+0.3*n1)*(0.85+0.3*n2); rough=0.82;\n"
-    "  float ax=abs(so.x), az=abs(so.y); vec3 mark=vec3(0.0);\n"
-    "  if(rV&&dl.y>=9.0){ if(ax>0.1&&ax<0.26) mark=vec3(0.75,0.55,0.08); if(ax>4.5&&ax<4.66) mark=vec3(0.75);\n"
-    "   if(ax<0.1&&fract(q.y/6.0)<0.0) mark=vec3(0.7); }\n"
-    "  if(rH&&dl.x>=9.0){ if(az>0.1&&az<0.26) mark=vec3(0.75,0.55,0.08); if(az>4.5&&az<4.66) mark=vec3(0.75); }\n"
-    "  if(rV&&dl.y>5.6&&dl.y<8.6&&fract(so.x/1.2)<0.5&&ax<4.5) mark=vec3(0.75);\n"
-    "  if(rH&&dl.x>5.6&&dl.x<8.6&&fract(so.y/1.2)<0.5&&az<4.5) mark=vec3(0.75);\n"
-    "  float lax=rV&&dl.y>=9.0?ax:(rH&&dl.x>=9.0?az:9.0);\n"
-    "  if(lax<9.0){ float tr=exp(-pow((abs(lax-2.2)-0.85)*3.2,2.0)); alb*=1.0-0.22*tr; rough=mix(rough,0.55,tr*0.6); }\n"
-    "  vec2 pc=floor(q/7.0); if(hash12(pc)>0.86){ alb*=0.78+0.12*hash12(pc+3.0); }\n"
-    "  float cr=vnoise(vec3(q*0.45,9.0)); if(abs(cr-0.5)<0.012&&vnoise(vec3(q*0.07,4.0))>0.55){ alb*=0.45; }\n"
-    "  if(lax<9.0){ float along=rV?q.y:q.x; vec2 mh=vec2(lax-2.2,mod(along,31.0)-15.5); if(length(mh)<0.45){ alb=vec3(0.09,0.085,0.08)*(0.7+0.6*step(0.5,fract((mh.x+mh.y)*4.0))); rough=0.45; met=0.6; } }\n"
-    "  if(dot(mark,mark)>0.0){ alb=mark*(0.7+0.3*n1)*(0.75+0.25*vnoise(vec3(q*2.0,1.0))); rough=0.6; }\n"
-    " } else if((dl.x<9.0&&segV)||(dl.y<9.0&&segH)||(dl.x<9.0&&dl.y<9.0&&node)){\n"
-    "  vec2 t=abs(fract(q/1.8)-0.5); float seam=smoothstep(0.46,0.49,max(t.x,t.y));\n"
-    "  alb=vec3(0.33,0.32,0.30)*(0.85+0.2*n2)*(1.0-0.35*seam); rough=0.85;\n"
-    "  float cd=min(segV?dl.x:99.0,segH?dl.y:99.0); if(cd<5.35) { alb=vec3(0.45,0.44,0.42); rough=0.7; }\n"
-    " } else {\n"
-    "  int lt=lotType(c);\n"
-    "  if(lt==1||lt==4){ alb=vec3(0.09,0.17,0.045)*(0.7+0.5*n2)*(0.85+0.3*n1); rough=0.95;\n"
-    "   if(lt==4){ vec2 bl=f-P*0.5; float pth=min(abs(bl.x-bl.y),abs(bl.x+bl.y))/1.414; if(pth<1.6||abs(length(bl)-14.0)<1.4){alb=vec3(0.42,0.37,0.28)*(0.85+0.2*n1); rough=0.9;} } }\n"
-    "  else if(lt==2){ alb=vec3(0.07)*(0.8+0.3*n1); rough=0.8; float sx=fract(q.x/3.0); if(sx<0.04&&abs(fract(q.y/12.0)-0.5)<0.3) alb=vec3(0.7); }\n"
-    "  else if(lt==3){ alb=vec3(0.29,0.28,0.26)*(0.7+0.4*n2)*(0.9+0.15*n1); rough=0.9; }\n"
-    "  else if(lt==5){ alb=vec3(0.62,0.55,0.40)*(0.9+0.2*n1); rough=0.95; }\n"
-    "  else { vec2 t=abs(fract(q/3.0)-0.5); float seam=smoothstep(0.47,0.49,max(t.x,t.y)); alb=vec3(0.40,0.37,0.33)*(0.85+0.2*n2)*(1.0-0.3*seam); rough=0.75; }\n"
-    " }\n"
-    " rough=mix(rough,0.06,wet); alb*=1.0-0.45*wet;\n"
-    " if(uNight>0.01&&node){ float acc=0.0; vec2 ctr=vec2(nn)*P;\n"
-    "  for(int k=0;k<4;k++){ vec2 o=vec2((k&1)==0?-7.6:7.6,(k&2)==0?-7.6:7.6); vec2 d=q-(ctr+o); acc+=exp(-dot(d,d)/42.0); }\n"
-    "  emis+=alb*vec3(1.0,0.68,0.36)*acc*uNight*7.0; }\n"
-    "}\n"
+    "uniform sampler2D uBiome; uniform vec2 uMapMin, uMapSize; uniform float uSnow;\n"
+    /* the land: biomes from a low-res map, rock on slopes, snow on peaks, beaches at the water */
+    "void terrain(inout vec3 alb,inout float rough,inout float met,vec3 N){\n"
+    " vec2 q=vPos.xz; float h=vPos.y; vec4 b=texture(uBiome,(q-uMapMin)/uMapSize);\n"
+    " float n1=vnoise(vec3(q*0.9,0.0)), n2=vnoise(vec3(q*0.05,3.0)), n3=vnoise(vec3(q*0.013,7.0)), n4=vnoise(vec3(q*0.25,5.0));\n"
+    " vec3 green=vec3(0.10,0.19,0.05), golden=vec3(0.50,0.40,0.19), desert=vec3(0.66,0.52,0.36), forest=vec3(0.06,0.10,0.04), sand=vec3(0.70,0.60,0.43);\n"
+    " float ar=b.r+(n2-0.5)*0.25+(n4-0.5)*0.08;\n"
+    " vec3 g=mix(green,golden,smoothstep(0.3,0.62,ar)); g=mix(g,desert,smoothstep(0.78,0.92,ar));\n"
+    " g=mix(g,forest,clamp(b.b*0.9+(n4-0.5)*0.3,0.0,1.0));\n"
+    " if(b.g>0.03){ vec2 cell=floor(q/90.0); float hc=hash12(cell); vec2 f=fract(q/90.0); float rw=hash12(cell+7.0)>0.5?q.x:q.y; float rows=0.5+0.5*sin(rw*2.4);\n"
+    "  vec3 crop=hc<0.3?vec3(0.15,0.28,0.06)*(0.75+0.35*rows):hc<0.55?vec3(0.58,0.49,0.22)*(0.85+0.2*rows):hc<0.75?vec3(0.34,0.24,0.14)*(0.8+0.25*rows):vec3(0.24,0.36,0.10)*(0.85+0.2*rows);\n"
+    "  crop=mix(crop,vec3(0.32,0.28,0.2),smoothstep(0.47,0.5,max(abs(f.x-0.5),abs(f.y-0.5))));\n"
+    "  g=mix(g,crop,smoothstep(0.0,0.5,b.g)); }\n"
+    " if(b.a>0.1&&b.a<0.4){ float rows=smoothstep(0.35,0.65,0.5+0.5*sin(q.y*1.6)); g=mix(g,mix(vec3(0.38,0.30,0.20),vec3(0.16,0.26,0.07),rows),0.8); }\n"
+    " if(b.a>0.4&&b.a<0.6){ g=mix(g,vec3(0.88,0.86,0.80)*(0.92+0.1*n1),0.85); }\n"
+    " if(b.a>0.6){ g=mix(g,vec3(0.80,0.64,0.44)*(0.85+0.2*sin(q.x*0.12+q.y*0.05+n2*8.0)),0.9); }\n"
+    " alb=g*(0.78+0.35*n1)*(0.85+0.3*n3); rough=0.93; met=0.0;\n"
+    " float slope=1.0-N.y; float rk=smoothstep(0.22,0.42,slope+(n1-0.5)*0.12);\n"
+    " vec3 rc=vec3(0.38,0.35,0.32)*(0.8+0.3*sin(h*1.3+n2*4.0))*(0.8+0.35*n1); if(b.r>0.8) rc*=vec3(1.15,0.95,0.8);\n"
+    " alb=mix(alb,rc,rk); rough=mix(rough,0.8,rk);\n"
+    " float sn=smoothstep(uSnow-25.0,uSnow+10.0,h+n2*40.0)*smoothstep(0.5,0.75,N.y); alb=mix(alb,vec3(0.90,0.92,0.95),sn); rough=mix(rough,0.45,sn);\n"
+    " float beach=(1.0-smoothstep(1.4,3.2,h-uWater))*step(h,6.0); alb=mix(alb,sand*(0.9+0.2*n1),beach);\n"
+    " if(h<uWater+0.15) alb*=0.6;\n"
+    " float wet=uRain*0.6*(0.5+0.5*n4); rough=mix(rough,0.3,wet); alb*=1.0-0.3*wet; }\n"
+    /* roads: the vertex 'normal' carries (across, along, type + length/1000) */
+    "void roadsurf(inout vec3 alb,inout float rough,inout float met,inout vec3 emis){\n"
+    " float u=vONrm.x, v=vONrm.y; int type=int(floor(vONrm.z)); float L=fract(vONrm.z)*1000.0; float au=abs(u);\n"
+    " vec2 q=vPos.xz; float n1=vnoise(vec3(q*0.9,0.0)), n2=vnoise(vec3(q*0.11,3.0));\n"
+    " alb=vec3(0.055)*(0.8+0.3*n1)*(0.85+0.3*n2); rough=0.82; met=0.0; vec3 mark=vec3(0.0);\n"
+    " if(type==0){ float tr=exp(-pow((abs(au-2.2)-0.85)*3.2,2.0)); alb*=1.0-0.22*tr; rough=mix(rough,0.55,tr*0.6);\n"
+    "  if(au>0.1&&au<0.26) mark=vec3(0.78,0.58,0.1); if(au>4.5&&au<4.65) mark=vec3(0.78);\n"
+    "  float e=min(v,L-v); if(e>0.6&&e<3.6&&fract(u/1.2)<0.5&&au<4.5) mark=vec3(0.8);\n"
+    "  if(e>3.8&&e<4.2&&u>0.0&&v>L*0.5) mark=vec3(0.8); if(e>3.8&&e<4.2&&u<0.0&&v<L*0.5) mark=vec3(0.8);\n"
+    "  vec2 mh=vec2(au-2.2,mod(v,31.0)-15.5); if(length(mh)<0.45){ alb=vec3(0.09,0.085,0.08)*(0.7+0.6*step(0.5,fract((mh.x+mh.y)*4.0))); rough=0.45; met=0.6; } }\n"
+    " else if(type==1){ float tr=exp(-pow((abs(au-1.85)-0.8)*3.0,2.0))+exp(-pow((abs(au-5.45)-0.8)*3.0,2.0)); alb*=1.0-0.18*tr;\n"
+    "  if(au>0.1&&au<0.28) mark=vec3(0.80,0.60,0.1); if(au>3.55&&au<3.72&&fract(v/12.0)<0.45) mark=vec3(0.82); if(au>7.05&&au<7.25) mark=vec3(0.82);\n"
+    "  if(au>7.3){ alb=vec3(0.09)*(0.8+0.3*n1); } }\n"
+    " else { float e=max(abs(u),abs(v)); alb*=0.95; }\n"
+    " vec2 pc=floor(q/7.0); if(hash12(pc)>0.86) alb*=0.78+0.12*hash12(pc+3.0);\n"
+    " float cr=vnoise(vec3(q*0.45,9.0)); if(abs(cr-0.5)<0.012&&vnoise(vec3(q*0.07,4.0))>0.55) alb*=0.45;\n"
+    " if(dot(mark,mark)>0.0){ alb=mark*(0.7+0.3*n1)*(0.75+0.25*vnoise(vec3(q*2.0,1.0))); rough=0.6; }\n"
+    " float wet=uRain*(0.45+0.55*smoothstep(0.35,0.7,vnoise(vec3(q*0.12,0.5)))); rough=mix(rough,0.06,wet); alb*=1.0-0.45*wet;\n"
+    " if(type==2&&uNight>0.01){ float acc=0.0; for(int k=0;k<4;k++){ vec2 o=vec2((k&1)==0?-7.6:7.6,(k&2)==0?-7.6:7.6); vec2 d=vec2(u,v)-o; acc+=exp(-dot(d,d)/42.0);} emis+=alb*vec3(1.0,0.68,0.36)*acc*uNight*7.0; } }\n"
+    /* the kerbed slab under every city block: sidewalk ring + the lot */
+    "void slab(inout vec3 alb,inout float rough,inout float met,inout vec3 emis,int lot){\n"
+    " vec2 q=vPos.xz; float n1=vnoise(vec3(q*0.9,0.0)), n2=vnoise(vec3(q*0.11,3.0)); met=0.0;\n"
+    " if(abs(vONrm.y)<0.5){ alb=vec3(0.48,0.47,0.45)*(0.9+0.1*n1); rough=0.7; return; }\n"
+    " float W=vSize.x, D=vSize.z; float u=(vObj.x+0.5)*W, v=(vObj.z+0.5)*D; float e=min(min(u,W-u),min(v,D-v));\n"
+    " if(e<4.0){ vec2 t=abs(fract(q/1.8)-0.5); float seam=smoothstep(0.46,0.49,max(t.x,t.y)); alb=vec3(0.36,0.35,0.33)*(0.85+0.2*n2)*(1.0-0.35*seam); rough=0.85; if(e<0.3){ alb=vec3(0.52,0.51,0.49); rough=0.7; } }\n"
+    " else if(lot==1||lot==4){ alb=vec3(0.09,0.18,0.045)*(0.7+0.5*n2)*(0.85+0.3*n1); rough=0.95;\n"
+    "  if(lot==4){ vec2 bl=vec2(u,v)-vec2(W,D)*0.5; float pth=min(abs(bl.x-bl.y),abs(bl.x+bl.y))/1.414; if(pth<1.6||abs(length(bl)-14.0)<1.4){ alb=vec3(0.45,0.40,0.30)*(0.85+0.2*n1); rough=0.9; } } }\n"
+    " else if(lot==2){ alb=vec3(0.07)*(0.8+0.3*n1); rough=0.8; if(fract(q.x/3.0)<0.04&&abs(fract(q.y/12.0)-0.5)<0.3) alb=vec3(0.7); }\n"
+    " else if(lot==3){ alb=vec3(0.31,0.30,0.28)*(0.7+0.4*n2)*(0.9+0.15*n1); rough=0.9; }\n"
+    " else if(lot==5){ alb=vec3(0.70,0.60,0.44)*(0.88+0.2*n1); rough=0.95; }\n"
+    " else { vec2 t=abs(fract(q/3.0)-0.5); float seam=smoothstep(0.47,0.49,max(t.x,t.y)); alb=vec3(0.44,0.41,0.36)*(0.85+0.2*n2)*(1.0-0.3*seam); rough=0.75; }\n"
+    " float wet=uRain*(0.45+0.55*smoothstep(0.35,0.7,vnoise(vec3(q*0.12,0.5)))); rough=mix(rough,0.1,wet); alb*=1.0-0.4*wet;\n"
+    " if(uNight>0.01){ float acc=0.0; for(int k=0;k<4;k++){ vec2 c=vec2((k&1)==0?2.6:W-2.6,(k&2)==0?2.6:D-2.6); vec2 d=vec2(u,v)-c; acc+=exp(-dot(d,d)/42.0);} emis+=alb*vec3(1.0,0.68,0.36)*acc*uNight*7.0; } }\n"
     "void main(){\n"
     " vec3 N=normalize(vNrm); vec3 V=normalize(uCam-vPos); float dist=length(uCam-vPos);\n"
     " vec3 alb=vBase.rgb; int pat=int(vBase.w+0.5); float met=vMat.x, rough=vMat.y, seed=vMat.z;\n"
@@ -234,23 +241,30 @@ static const char *FS_LIT =
     "  else { alb=vec3(0.22); rough=0.9; met=0.0; } }\n"
     " else if(pat==2){ if(side){ vec2 cl=vec2(fu/3.2,(fv-4.4)/3.4); vec2 id=floor(cl); vec2 f=fract(cl);\n"
     "   alb*=0.85+0.25*vnoise(vPos*1.7); rough=0.85;\n"
+    "   if(seed>0.33&&seed<0.66){ vec2 bk=vec2(fu/0.5,fv/0.17); bk.x+=0.5*mod(floor(bk.y),2.0); vec2 bf=fract(bk); float mort=max(step(bf.x,0.06),step(bf.y,0.12)); alb*=mix(0.85+0.3*hash12(floor(bk)),0.55,mort); }\n"
+    "   else if(seed>=0.66){ vec2 pn=fract(vec2(fu/1.6,fv/0.8)); alb*=0.92+0.08*vnoise(vPos*4.0); alb*=1.0-0.25*max(step(pn.x,0.02),step(pn.y,0.04)); }\n"
     "   if(fv<4.4){ bool win=fv>0.4&&fv<3.4&&fract(fu/4.0)>0.12; if(win){ alb=vec3(0.03); met=0.8; rough=0.08; float hs=hash12(vec2(floor(fu/4.0),seed*31.0+face)); emis+=mix(vec3(1.0,0.7,0.4),vec3(0.75,0.85,1.0),step(0.6,hs))*0.55*uNight*(0.4+0.8*hs)*(0.75+0.25*smoothstep(0.4,3.4,fv)); }\n"
     "    else if(fv>3.4&&fv<4.1) { alb=vBase.rgb*0.4; } }\n"
     "   else if(fv<vSize.y-1.0&&abs(f.x-0.5)<0.28&&abs(f.y-0.5)<0.3){ alb=vec3(0.035,0.04,0.05); met=0.8; rough=0.08;\n"
     "    float h=hash13(vec3(id,seed*53.0+face)); if(h<0.38) emis+=mix(vec3(1.0,0.75,0.45),vec3(0.7,0.85,1.0),step(0.28,h))*(0.4+0.7*hash12(id+seed))*uNight*0.8; } }\n"
     "  else { alb=vec3(0.25); rough=0.9; } }\n"
     " else if(pat==3){ if(side){ alb*=0.9+0.15*vnoise(vPos*2.0); rough=0.9;\n"
+    "   if(seed<0.3){ float bd=fract(fv/0.22); alb*=0.86+0.14*smoothstep(0.0,0.25,bd); }\n"
+    "   else if(seed>=0.5){ alb*=0.93+0.1*vnoise(vPos*6.0); rough=0.95; }\n"
     "   float cx=fract(fu/4.0), fl=fv/2.9; vec2 id=vec2(floor(fu/4.0),floor(fl));\n"
     "   if(abs(cx-0.5)<0.2&&abs(fract(fl)-0.55)<0.22&&fv<vSize.y-0.3){ alb=vec3(0.05); met=0.6; rough=0.1;\n"
     "    if(hash13(vec3(id,seed*17.0+face))<0.55) emis+=vec3(1.0,0.72,0.4)*1.0*uNight; } }\n"
     "  else { alb=vec3(0.3); } }\n"
-    " else if(pat==4){ alb*=0.75+0.25*step(0.18,fract(vPos.y*3.0)); rough=0.8; }\n"
+    " else if(pat==4){ if(seed>0.5){ float rw=fract(vPos.y*2.2); float bar=0.5+0.5*sin((vPos.x+vPos.z)*7.0); alb*=(0.72+0.28*smoothstep(0.0,0.2,rw))*(0.85+0.2*bar)*(0.9+0.2*hash12(floor(vPos.xz*2.0))); rough=0.65; }\n"
+    "   else alb*=0.75+0.25*step(0.18,fract(vPos.y*3.0)); rough=max(rough,0.6); }\n"
     " else if(pat==5){ coat=1.0; }\n"
     " else if(pat==6){ emis*=0.85+0.15*sin(uTime*7.0+seed*40.0)*step(0.5,hash12(vec2(floor(uTime*9.0),seed))); }\n"
     " else if(pat==7){ vec2 q=vPos.xz; N=normalize(vec3((vnoise(vec3(q*0.8,uTime*0.7))-0.5)*0.15,1.0,(vnoise(vec3(q*0.8+5.0,uTime*0.7))-0.5)*0.15)); alb=vec3(0.02,0.06,0.07); rough=0.05; met=0.0; }\n"
     " else if(pat==8){ alb*=0.6+0.7*vnoise(vPos*1.6); rough=0.9; }\n"
     " else if(pat==9){ alb*=0.8+0.2*step(0.5,fract((side?fu:vPos.x)*2.5)); alb*=0.8+0.3*vnoise(vPos*0.8); rough=0.6; }\n"
-    " else if(pat==10){ ground(alb,rough,met,emis); }\n"
+    " else if(pat==10){ terrain(alb,rough,met,N); }\n"
+    " else if(pat==13){ N=vec3(0.0,1.0,0.0); roadsurf(alb,rough,met,emis); }\n"
+    " else if(pat==14){ slab(alb,rough,met,emis,int(seed)); }\n"
     " else if(pat==11){ vec2 q=vPos.xz; float t=uTime;\n"
     "   vec3 n=vec3(0.0,1.0,0.0); n.x+=0.06*sin(q.x*0.09+t*1.1)+0.04*sin(q.x*0.27+q.y*0.15+t*1.9)+(vnoise(vec3(q*0.5,t*0.5))-0.5)*0.16;\n"
     "   n.z+=0.06*sin(q.y*0.11+t*0.9)+0.04*sin(q.y*0.25-q.x*0.19+t*1.6)+(vnoise(vec3(q*0.5+7.0,t*0.5))-0.5)*0.16;\n"
@@ -330,8 +344,8 @@ static const char *VS_HUD =
     "uniform vec2 uScreen; out vec2 vUV; out vec4 vCol;\n"
     "void main(){ gl_Position=vec4(aPos/uScreen*vec2(2.0,-2.0)+vec2(-1.0,1.0),0.0,1.0); vUV=aUV; vCol=aCol; }\n";
 static const char *FS_HUD =
-    "in vec2 vUV; in vec4 vCol; out vec4 frag; uniform sampler2D uFont;\n"
-    "void main(){ float a=vUV.x<0.0?1.0:texture(uFont,vUV).r; frag=vec4(vCol.rgb,vCol.a*a); }\n";
+    "in vec2 vUV; in vec4 vCol; out vec4 frag; uniform sampler2D uFont; uniform int uMode;\n"
+    "void main(){ if(uMode==1){ frag=texture(uFont,vUV)*vCol; return; } float a=vUV.x<0.0?1.0:texture(uFont,vUV).r; frag=vec4(vCol.rgb,vCol.a*a); }\n";
 
 static GLuint compile(GLenum type, const char *const *src, int n) {
     GLuint s = glCreateShader(type);
@@ -491,13 +505,13 @@ static Mesh mk_cone(int n) { /* radius 0.5 at y=0, apex at y=1 */
 }
 
 /* ================================================================== instanced renderer */
-enum { MS_CUBE, MS_WEDGE, MS_CYL, MS_CYL8, MS_SPHERE, MS_BLOB, MS_TORUS, MS_PYR, MS_GABLE, MS_CONE, MS_GROUND, MS_OCEAN,
+enum { MS_CUBE, MS_WEDGE, MS_CYL, MS_CYL8, MS_SPHERE, MS_BLOB, MS_TORUS, MS_PYR, MS_GABLE, MS_CONE, MS_GROUND, MS_OCEAN, MS_ROADS,
        MS_X0, MS_XN = MS_X0 + 24, /* slots filled by models.c (vehicle and character meshes) */
        MS_N = MS_XN };
 static Mesh MESH[MS_N];
 /* material: base color, shader pattern, metal, roughness, emission, nightOnly (emission scaled by darkness) */
 typedef struct { v3 base; int pat; float metal, rough; v3 emis; float night; } Mat;
-enum { PAT_PLAIN, PAT_TOWER, PAT_MIDRISE, PAT_HOUSE, PAT_ROOF, PAT_PAINT, PAT_NEON, PAT_POND, PAT_LEAF, PAT_RIBS, PAT_GROUND, PAT_OCEAN, PAT_PLANK };
+enum { PAT_PLAIN, PAT_TOWER, PAT_MIDRISE, PAT_HOUSE, PAT_ROOF, PAT_PAINT, PAT_NEON, PAT_POND, PAT_LEAF, PAT_RIBS, PAT_GROUND, PAT_OCEAN, PAT_PLANK, PAT_ROADMESH, PAT_SIDEWALK };
 #define IFL 28
 typedef struct { float *d; int n, cap; } IBuf;
 static IBuf SI[MS_N], DI[MS_N];
@@ -514,36 +528,45 @@ static void ipush(IBuf *b, m4 m, const Mat *mt, float seed) {
     b->n++;
 }
 static void inst(int mesh, m4 m, const Mat *mt) { ipush(&DI[mesh], m, mt, 0.5f); }
-/* small static details (signs, street furniture) live in a tiled buffer and are only drawn near the camera */
-static IBuf SD[MS_N];
-static bool detail_mode;
-static void inst_s(int mesh, m4 m, const Mat *mt, float seed) { ipush(detail_mode ? &SD[mesh] : &SI[mesh], m, mt, seed); }
-#define DT_SIZE 128.0f
-#define DT_N 20
-#define DT_MIN (-480.0f)
-static int dt_start[MS_N][DT_N * DT_N + 1];
-static GLuint vao_sd[MS_N], vbo_sd[MS_N];
-static int dt_tile(const float *inst) {
-    int tx = (int)floorf((inst[12] - DT_MIN) / DT_SIZE), tz = (int)floorf((inst[14] - DT_MIN) / DT_SIZE);
-    tx = tx < 0 ? 0 : tx >= DT_N ? DT_N - 1 : tx;
-    tz = tz < 0 ? 0 : tz >= DT_N ? DT_N - 1 : tz;
-    return tz * DT_N + tx;
+/* static instances: "always" ones (terrain, sea, roads) plus three tiers stored in position-sorted tiles,
+ * drawn only within a radius: big buildings far, trees nearer, small details near the camera */
+#define NTIER 3
+static IBuf ST[NTIER][MS_N];
+static int static_tier;      /* -1 = always drawn */
+static bool detail_mode;     /* forces tier 2 */
+static void inst_s(int mesh, m4 m, const Mat *mt, float seed) {
+    IBuf *b = static_tier < 0 ? &SI[mesh] : &ST[detail_mode ? 2 : static_tier][mesh];
+    ipush(b, m, mt, seed);
 }
-static void sort_details(int mesh) {
-    IBuf *b = &SD[mesh];
-    int cnt[DT_N * DT_N] = {0};
+#define DT_SIZE 256.0f
+#define DT_X0 (-300.0f)
+#define DT_Z0 (-300.0f)
+#define DT_NX 33
+#define DT_NZ 39
+static int dt_start[NTIER][MS_N][DT_NX * DT_NZ + 1];
+static GLuint vao_t[NTIER][MS_N], vbo_t[NTIER][MS_N];
+static float tier_radius[NTIER] = {2700, 1150, 480};
+static int dt_tile(const float *inst) {
+    int tx = (int)floorf((inst[12] - DT_X0) / DT_SIZE), tz = (int)floorf((inst[14] - DT_Z0) / DT_SIZE);
+    tx = tx < 0 ? 0 : tx >= DT_NX ? DT_NX - 1 : tx;
+    tz = tz < 0 ? 0 : tz >= DT_NZ ? DT_NZ - 1 : tz;
+    return tz * DT_NX + tx;
+}
+static void sort_tiles(int t, int mesh) {
+    IBuf *b = &ST[t][mesh];
+    static int cnt[DT_NX * DT_NZ], fill[DT_NX * DT_NZ];
+    memset(cnt, 0, sizeof(cnt));
     for (int i = 0; i < b->n; i++) cnt[dt_tile(b->d + i * IFL)]++;
-    dt_start[mesh][0] = 0;
-    for (int t = 0; t < DT_N * DT_N; t++) dt_start[mesh][t + 1] = dt_start[mesh][t] + cnt[t];
+    int *st = dt_start[t][mesh];
+    st[0] = 0;
+    for (int k = 0; k < DT_NX * DT_NZ; k++) st[k + 1] = st[k] + cnt[k];
     float *out = malloc(sizeof(float) * IFL * (size_t)(b->n ? b->n : 1));
-    int fill[DT_N * DT_N];
-    memcpy(fill, dt_start[mesh], sizeof(fill));
+    memcpy(fill, st, sizeof(fill));
     for (int i = 0; i < b->n; i++) memcpy(out + (fill[dt_tile(b->d + i * IFL)]++) * IFL, b->d + i * IFL, sizeof(float) * IFL);
     free(b->d);
     b->d = out;
     b->cap = b->n * IFL;
 }
-
 static void setup_vao(GLuint vao, GLuint mvbo, GLuint ivbo) {
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, mvbo);
@@ -559,16 +582,16 @@ static void setup_vao(GLuint vao, GLuint mvbo, GLuint ivbo) {
     }
     glBindVertexArray(0);
 }
-static void setup_vao(GLuint vao, GLuint mvbo, GLuint ivbo);
 static void upload_static(void) {
-    for (int i = 0; i < MS_N; i++) {
-        sort_details(i);
-        glGenVertexArrays(1, &vao_sd[i]);
-        glGenBuffers(1, &vbo_sd[i]);
-        setup_vao(vao_sd[i], MESH[i].vbo, vbo_sd[i]);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_sd[i]);
-        glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)SD[i].n * IFL, SD[i].d, GL_STATIC_DRAW);
-    }
+    for (int t = 0; t < NTIER; t++)
+        for (int i = 0; i < MS_N; i++) {
+            sort_tiles(t, i);
+            glGenVertexArrays(1, &vao_t[t][i]);
+            glGenBuffers(1, &vbo_t[t][i]);
+            setup_vao(vao_t[t][i], MESH[i].vbo, vbo_t[t][i]);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo_t[t][i]);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)ST[t][i].n * IFL, ST[t][i].d, GL_STATIC_DRAW);
+        }
     for (int i = 0; i < MS_N; i++) {
         glBindBuffer(GL_ARRAY_BUFFER, vbo_s[i]);
         glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)SI[i].n * IFL, SI[i].d, GL_STATIC_DRAW);
@@ -582,28 +605,41 @@ static void upload_dynamic(void) {
         glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)DI[i].n * IFL, DI[i].d, GL_STREAM_DRAW);
     }
 }
-static void draw_details(float cx, float cz, float radius) {
-    int x0 = (int)floorf((cx - radius - DT_MIN) / DT_SIZE), x1 = (int)floorf((cx + radius - DT_MIN) / DT_SIZE);
-    int z0 = (int)floorf((cz - radius - DT_MIN) / DT_SIZE), z1 = (int)floorf((cz + radius - DT_MIN) / DT_SIZE);
-    x0 = x0 < 0 ? 0 : x0; z0 = z0 < 0 ? 0 : z0; x1 = x1 >= DT_N ? DT_N - 1 : x1; z1 = z1 >= DT_N ? DT_N - 1 : z1;
+static void draw_tier(int t, float cx, float cz, float radius) {
+    int x0 = (int)floorf((cx - radius - DT_X0) / DT_SIZE), x1 = (int)floorf((cx + radius - DT_X0) / DT_SIZE);
+    int z0 = (int)floorf((cz - radius - DT_Z0) / DT_SIZE), z1 = (int)floorf((cz + radius - DT_Z0) / DT_SIZE);
+    x0 = x0 < 0 ? 0 : x0; z0 = z0 < 0 ? 0 : z0; x1 = x1 >= DT_NX ? DT_NX - 1 : x1; z1 = z1 >= DT_NZ ? DT_NZ - 1 : z1;
     if (x0 > x1 || z0 > z1) return;
     for (int m = 0; m < MS_N; m++) {
-        if (!SD[m].n) continue;
-        glBindVertexArray(vao_sd[m]);
-        glBindBuffer(GL_ARRAY_BUFFER, vbo_sd[m]);
+        if (!ST[t][m].n) continue;
+        glBindVertexArray(vao_t[t][m]);
+        glBindBuffer(GL_ARRAY_BUFFER, vbo_t[t][m]);
         for (int tz = z0; tz <= z1; tz++) {
-            int a = dt_start[m][tz * DT_N + x0], b = dt_start[m][tz * DT_N + x1 + 1];
+            /* only the part of the row inside the circle */
+            float dz = fmaxf(0, fabsf(DT_Z0 + (tz + 0.5f) * DT_SIZE - cz) - DT_SIZE * 0.5f);
+            if (dz > radius) continue;
+            float half = sqrtf(radius * radius - dz * dz);
+            int a0 = (int)floorf((cx - half - DT_X0) / DT_SIZE), a1 = (int)floorf((cx + half - DT_X0) / DT_SIZE);
+            a0 = a0 < x0 ? x0 : a0; a1 = a1 > x1 ? x1 : a1;
+            if (a0 > a1) continue;
+            int a = dt_start[t][m][tz * DT_NX + a0], b = dt_start[t][m][tz * DT_NX + a1 + 1];
             if (b <= a) continue;
             for (int k = 0; k < 7; k++) glVertexAttribPointer(2 + k, 4, GL_FLOAT, GL_FALSE, IFL * 4, (void *)(intptr_t)((size_t)a * IFL * 4 + (size_t)k * 16));
             glDrawArraysInstanced(GL_TRIANGLES, 0, MESH[m].count, b - a);
         }
     }
 }
-static float detail_cx, detail_cz, detail_r = 400;
+static float detail_cx, detail_cz, detail_r = 1;  /* radius scale: 1 = full view, smaller for the shadow pass */
+static bool skip_always;
 static void draw_all_instances(void) {
-    draw_details(detail_cx, detail_cz, detail_r);
+    for (int t = 0; t < NTIER; t++) draw_tier(t, detail_cx, detail_cz, detail_r >= 1 ? tier_radius[t] : fminf(tier_radius[t], detail_r));
     for (int i = 0; i < MS_N; i++) {
-        if (stat_count[i]) { glBindVertexArray(vao_s[i]); glDrawArraysInstanced(GL_TRIANGLES, 0, MESH[i].count, stat_count[i]); }
+        if (stat_count[i] && !skip_always) {
+            if (i == MS_ROADS) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(-1.5f, -4.0f); }
+            glBindVertexArray(vao_s[i]);
+            glDrawArraysInstanced(GL_TRIANGLES, 0, MESH[i].count, stat_count[i]);
+            if (i == MS_ROADS) glDisable(GL_POLYGON_OFFSET_FILL);
+        }
         if (DI[i].n) { glBindVertexArray(vao_d[i]); glDrawArraysInstanced(GL_TRIANGLES, 0, MESH[i].count, DI[i].n); }
     }
 }
@@ -717,6 +753,7 @@ static void make_font(void) {
 
 static Mesh mk_ground(void);
 static Mesh mk_ocean(void);
+static Mesh mk_roads(void);
 static void models_init(void);
 static void init_gl(void) {
     P_LIT = program(VS_LIT, FS_LIT, true);
@@ -737,8 +774,7 @@ static void init_gl(void) {
     MESH[MS_PYR] = mk_pyramid();
     MESH[MS_GABLE] = mk_gable();
     MESH[MS_CONE] = mk_cone(9);
-    MESH[MS_GROUND] = mk_ground();
-    MESH[MS_OCEAN] = mk_ocean();
+    /* ground, sea and roads are built after the world exists (finish_world_meshes) */
     models_init();
     for (int i = 0; i < MS_N; i++) {
         glGenVertexArrays(1, &vao_s[i]);
@@ -787,6 +823,14 @@ static void init_gl(void) {
     make_font();
 }
 
+static void finish_world_meshes(void) {
+    MESH[MS_GROUND] = mk_ground();
+    MESH[MS_OCEAN] = mk_ocean();
+    MESH[MS_ROADS] = mk_roads();
+    int ms[3] = {MS_GROUND, MS_OCEAN, MS_ROADS};
+    for (int k = 0; k < 3; k++) { setup_vao(vao_s[ms[k]], MESH[ms[k]].vbo, vbo_s[ms[k]]); setup_vao(vao_d[ms[k]], MESH[ms[k]].vbo, vbo_d[ms[k]]); }
+}
+
 /* ================================================================== camera + particles */
 typedef struct { m4 view, proj, vp; v3 pos, right, up, fwd; float fov; } Cam;
 static Cam cam;
@@ -796,7 +840,7 @@ static void setup_camera(v3 eye, v3 at, float fov_deg) {
     cam.fwd = fwd;
     cam.fov = fov_deg;
     cam.view = m4_look(eye, at, V(0, 1, 0));
-    cam.proj = m4_persp(fov_deg * 3.14159f / 180, (float)rw / rh, 0.25f, 3200);
+    cam.proj = m4_persp(fov_deg * 3.14159f / 180, (float)rw / rh, 0.4f, 7000);
     cam.vp = m4_mul(cam.proj, cam.view);
     cam.right = norm(cross(fwd, V(0, 1, 0)));
     cam.up = cross(cam.right, fwd);
@@ -903,13 +947,15 @@ static void htext(const char *s, float x, float y, float sc, float r, float g, f
         hquad(x, y, 5 * sc, 7 * sc, u0, 0, u1, 7 / 8.0f, r, g, b, a);
     }
 }
+static GLuint hud_tex_override;
 static void hud_flush(void) {
     if (!hcount) return;
     glUseProgram(P_HUD);
     glUniform2f(U(P_HUD, "uScreen"), (float)rw, (float)rh);
     glUniform1i(U(P_HUD, "uFont"), 0);
+    glUniform1i(U(P_HUD, "uMode"), hud_tex_override ? 1 : 0);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, tex_font);
+    glBindTexture(GL_TEXTURE_2D, hud_tex_override ? hud_tex_override : tex_font);
     glBindVertexArray(vao_hud);
     glBindBuffer(GL_ARRAY_BUFFER, vbo_hud);
     glBufferData(GL_ARRAY_BUFFER, sizeof(float) * (size_t)hcount * 8, hbuf, GL_STREAM_DRAW);

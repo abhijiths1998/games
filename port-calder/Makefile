@@ -3,7 +3,7 @@ CFLAGS  ?= -O2 -Wall -Wextra -std=gnu11
 PREFIX  ?= $(HOME)/.local
 DEPS_CFLAGS := $(shell pkg-config --cflags sdl2 gl)
 DEPS_LIBS   := $(shell pkg-config --libs sdl2 gl)
-SRC := src/main.c src/gfx.c src/world.c src/actors.c src/game.c
+SRC := src/main.c src/gfx.c src/map.c src/city.c src/actors.c src/game.c src/models.c
 
 port-calder: $(SRC) src/audio.c src/audio.h
 	$(CC) $(CFLAGS) $(DEPS_CFLAGS) -o $@ src/main.c src/audio.c $(DEPS_LIBS) -lm

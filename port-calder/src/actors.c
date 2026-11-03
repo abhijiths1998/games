@@ -118,9 +118,10 @@ typedef struct {
     v3 col;
     float rpm, wheel;
     /* navigation */
-    int ni, nj, ndir;
-    v3 wp[10];
-    int wstop[10]; /* node index (i*(NB+1)+j) whose light gates this waypoint, or -1 */
+    int tn, te, lane_i;      /* heading for node tn along edge te; lane 0 inner, 1 outer on highways */
+    v3 wp[10], wdir[10];
+    int wstop[10];           /* node whose light gates this waypoint, or -1 */
+    float wspd[10];          /* cruise speed for the stretch ending at this waypoint */
     int nwp;
     float cruise, stuck_t, honk_t, back_t, panic_t, hit_cool, smoke_acc, lightbar;
     int cop_state, slot, mission;
@@ -182,102 +183,120 @@ static Car *spawn_car(int model, v3 pos, float yaw, int driver) {
 }
 
 /* ---- traffic lights: 20 s cycle, north-south first */
-static float light_offset(int i, int j) { return hash2f(i, j, 99) * 20; }
-static int light_state(int i, int j, int dir) { /* 0 green, 1 amber, 2 red */
-    if (node_degree(i, j) < 3) return 0;
-    float ph = fmodf(G.time + light_offset(i, j), 20.0f);
-    bool ns = (dir & 1) == 1;
+/* ---- traffic lights: 20 s cycle, north-south roads first */
+static int light_state(int n, v3 din) { /* 0 green, 1 amber, 2 red */
+    if (n < 0 || !nodes[n].light) return 0;
+    float ph = fmodf(G.time + hash2f(n, 7, 99) * 20, 20.0f);
+    bool ns = fabsf(din.z) > fabsf(din.x);
     if (ph < 8) return ns ? 0 : 2;
     if (ph < 10) return ns ? 1 : 2;
     if (ph < 18) return ns ? 2 : 0;
     return ns ? 2 : 1;
 }
 
-/* ---- breadth-first route field over the road grid (for police, the GPS and the autopilot) */
-typedef struct { short d[NB + 1][NB + 1]; int ti, tj; } Route;
-static void route_build(Route *r, int ti, int tj) {
-    static int qi[(NB + 1) * (NB + 1)], qj[(NB + 1) * (NB + 1)];
-    for (int i = 0; i <= NB; i++) for (int j = 0; j <= NB; j++) r->d[i][j] = 9999;
-    r->ti = ti; r->tj = tj;
+/* ---- breadth-first route field over the road graph (police, GPS, autopilot) */
+typedef struct { short *d; int t; } Route;
+static void route_build(Route *r, int target) {
+    static int q[MAXNODE];
+    if (!r->d) r->d = malloc(sizeof(short) * MAXNODE);
+    for (int i = 0; i < nnode; i++) r->d[i] = 30000;
+    r->t = target;
     int h = 0, t = 0;
-    r->d[ti][tj] = 0;
-    qi[t] = ti; qj[t++] = tj;
+    r->d[target] = 0;
+    q[t++] = target;
     while (h < t) {
-        int i = qi[h], j = qj[h++];
-        for (int d = 0; d < 4; d++) {
-            if (!edge_ok(i, j, d)) continue;
-            int a = i + DX[d], b = j + DZ[d];
-            if (r->d[a][b] <= r->d[i][j] + 1) continue;
-            r->d[a][b] = (short)(r->d[i][j] + 1);
-            qi[t] = a; qj[t++] = b;
+        int n = q[h++];
+        for (int k = 0; k < nodes[n].deg; k++) {
+            int m = edge_other(nodes[n].e[k], n);
+            if (r->d[m] <= r->d[n] + 1) continue;
+            r->d[m] = (short)(r->d[n] + 1);
+            q[t++] = m;
         }
     }
 }
-static int route_next_dir(const Route *r, int i, int j, int avoid_dir) {
-    int best = -1, bd = 99999;
-    for (int d = 0; d < 4; d++) {
-        if (!edge_ok(i, j, d)) continue;
-        int v = r->d[i + DX[d]][j + DZ[d]] * 4 + (d == avoid_dir ? 3 : 0);
-        if (v < bd) { bd = v; best = d; }
+static int route_next_edge(const Route *r, int n, int avoid_edge) {
+    if (!r->d || n < 0 || n >= nnode) return -1;
+    int best = -1, bd = 1 << 30;
+    for (int k = 0; k < nodes[n].deg; k++) {
+        int e = nodes[n].e[k];
+        int v = r->d[edge_other(e, n)] * 4 + (e == avoid_edge ? 3 : 0);
+        if (v < bd) { bd = v; best = e; }
     }
     return best;
 }
 
 /* ---- waypoint queue */
-static v3 lane_pt(int i, int j, int dir, float s, float off) {
-    v3 D = dir_vec(dir), R = V(-D.z, 0, D.x);
-    return add(add(node_pos(i, j), mul(D, s)), mul(R, off));
-}
-static void wp_push(Car *c, v3 p, int stop) {
+static float lane_off(const Car *c, int e) { return edges[e].hwy >= 0 ? (c->lane_i ? 5.45f : 1.85f) : LANE_OFF; }
+static float edge_cruise(const Car *c, int e) { return edges[e].hwy >= 0 ? c->cruise * 2.05f : c->cruise; }
+static void wp_push(Car *c, v3 p, int stop, v3 dir, float spd) {
     if (c->nwp >= 10) return;
-    c->wp[c->nwp] = p;
-    c->wstop[c->nwp] = stop;
+    c->wp[c->nwp] = p; c->wstop[c->nwp] = stop; c->wdir[c->nwp] = dir; c->wspd[c->nwp] = spd;
     c->nwp++;
 }
 static void wp_pop(Car *c) {
-    for (int k = 1; k < c->nwp; k++) { c->wp[k - 1] = c->wp[k]; c->wstop[k - 1] = c->wstop[k]; }
+    for (int k = 1; k < c->nwp; k++) { c->wp[k - 1] = c->wp[k]; c->wstop[k - 1] = c->wstop[k]; c->wdir[k - 1] = c->wdir[k]; c->wspd[k - 1] = c->wspd[k]; }
     if (c->nwp > 0) c->nwp--;
 }
-/* car is on the edge into node (ni,nj) travelling ndir; choose the next direction and queue the manoeuvre */
-static void plan_turn(Car *c, int d2, float off) {
-    int i = c->ni, j = c->nj, d = c->ndir;
-    v3 D = dir_vec(d), R = V(-D.z, 0, D.x), D2 = dir_vec(d2), R2 = V(-D2.z, 0, D2.x);
-    v3 B = node_pos(i, j);
-    v3 a = add(add(B, mul(D, -9)), mul(R, off)), b = add(add(B, mul(D2, 9)), mul(R2, off));
+static float cross2(v3 a, v3 b) { return a.x * b.z - a.z * b.x; }
+/* the car is on edge te heading for node tn: queue the turn onto e2 and the stretch to its far end */
+static void plan_turn(Car *c, int e2) {
+    int B = c->tn, e = c->te;
+    int A = edge_other(e, B);
+    v3 D = edge_dir(e, A), R = right_vec(D), D2 = edge_dir(e2, B), R2 = right_vec(D2);
+    float off1 = lane_off(c, e), off2 = lane_off(c, e2);
+    float in = nodes[B].inset > 0 ? nodes[B].inset + 3.5f : 4;
+    v3 Bp = nodes[B].p;
+    v3 a = add(add(Bp, mul(D, -in)), mul(R, off1)), b = add(add(Bp, mul(D2, in)), mul(R2, off2));
     v3 ctl;
-    if (d2 == d) ctl = mul(add(a, b), 0.5f);
-    else if (d2 == (d + 2) % 4) ctl = add(B, mul(D, 4));
-    else ctl = add(add(B, mul(R, off)), mul(R2, off));
+    float dd = dot(D, D2);
+    if (dd > 0.97f) ctl = mul(add(a, b), 0.5f);
+    else if (dd < -0.9f) ctl = add(Bp, add(mul(D, 4), mul(R, -off1)));
+    else {
+        float den = cross2(D, D2);
+        float t = fabsf(den) > 1e-4f ? cross2(sub(b, a), D2) / den : in;
+        ctl = add(a, mul(D, clampf(t, 0, in * 2 + 6)));
+    }
+    float spd = fminf(edge_cruise(c, e), edge_cruise(c, e2));
+    if (dd < 0.9f) spd = fminf(spd, 8);
     for (int k = 1; k <= 3; k++) {
         float t = k / 3.0f;
-        v3 p = add(add(mul(a, (1 - t) * (1 - t)), mul(ctl, 2 * t * (1 - t))), mul(b, t * t));
-        wp_push(c, p, -1);
+        wp_push(c, add(add(mul(a, (1 - t) * (1 - t)), mul(ctl, 2 * t * (1 - t))), mul(b, t * t)), -1, D2, spd);
     }
-    c->sig = d2 == d || d2 == (d + 2) % 4 ? 0 : d2 == (d + 1) % 4 ? 1 : -1;
-    c->sig_node = i * (NB + 1) + j;
-    int i2 = i + DX[d2], j2 = j + DZ[d2];
-    c->ni = i2; c->nj = j2; c->ndir = d2;
-    wp_push(c, lane_pt(i, j, d2, PITCH * 0.5f, off), -1);
-    wp_push(c, lane_pt(i, j, d2, PITCH - 11, off), i2 * (NB + 1) + j2);
+    int C = edge_other(e2, B);
+    c->te = e2; c->tn = C;
+    float L2 = edges[e2].len, in3 = nodes[C].inset > 0 ? nodes[C].inset + 3.5f : 4;
+    float cr = edge_cruise(c, e2);
+    if (L2 > 34) wp_push(c, lane_pos(e2, B, L2 * 0.5f, off2), -1, D2, cr);
+    wp_push(c, lane_pos(e2, B, fmaxf(L2 - in3, in + 1), off2), nodes[C].light ? C : -1, D2, cr);
+    c->sig = dd > 0.9f || dd < -0.9f ? 0 : (cross2(D, D2) > 0 ? 1 : -1);
+    c->sig_node = B;
 }
-static int random_turn(int i, int j, int d) {
-    int opts[3], n = 0;
-    int cand[3] = {d, (d + 1) % 4, (d + 3) % 4};
-    for (int k = 0; k < 3; k++) if (edge_ok(i, j, cand[k])) opts[n++] = cand[k];
-    if (!n) return (d + 2) % 4;
-    if (edge_ok(i, j, d) && frand() < 0.5f) return d;
+static int random_turn(Car *c) {
+    int B = c->tn, e = c->te;
+    v3 Din = edge_dir(e, edge_other(e, B));
+    int opts[5], n = 0, straight = -1;
+    float bestd = -2;
+    for (int k = 0; k < nodes[B].deg; k++) {
+        int e2 = nodes[B].e[k];
+        if (e2 == e) continue;
+        opts[n++] = e2;
+        float d = dot(Din, edge_dir(e2, B));
+        if (d > bestd) { bestd = d; straight = e2; }
+    }
+    if (!n) return e;
+    if (straight >= 0 && (frand() < 0.5f || n == 1)) return straight;
     return opts[rand() % n];
 }
-/* place a car on the lane of edge (i,j)->dir at distance s */
-static void place_on_edge(Car *c, int i, int j, int dir, float s) {
-    c->pos = lane_pt(i, j, dir, s, LANE_OFF);
-    c->yaw = yaw_of(dir_vec(dir));
-    c->ni = i + DX[dir]; c->nj = j + DZ[dir]; c->ndir = dir;
+static void place_on_edge(Car *c, int e, int from, float s) {
+    c->te = e; c->tn = edge_other(e, from);
+    c->pos = lane_pos(e, from, s, lane_off(c, e));
+    v3 D = edge_dir(e, from);
+    c->yaw = yaw_of(D);
     c->nwp = 0;
-    wp_push(c, lane_pt(i, j, dir, PITCH - 11, LANE_OFF), c->ni * (NB + 1) + c->nj);
+    float in3 = nodes[c->tn].inset > 0 ? nodes[c->tn].inset + 3.5f : 4;
+    wp_push(c, lane_pos(e, from, fmaxf(edges[e].len - in3, s + 1), lane_off(c, e)), nodes[c->tn].light ? c->tn : -1, D, edge_cruise(c, e));
 }
 
-/* ---- the car physics step, shared by every driver */
 static void car_hit_effects(Car *c, v3 at, float impact, v3 n);
 static void car_physics(Car *c, float dt) {
     const CarSpec *S = &SPEC[c->model];
@@ -384,11 +403,12 @@ static void car_physics(Car *c, float dt) {
         c->pitch += (clampf(c->vy * 0.02f, -0.35f, 0.25f) - c->pitch) * fminf(1, dt * 2);
     }
     /* water */
-    if (!c->sunk && water_at(c->pos.x, c->pos.z) && c->pos.y < WATER_Y + 0.3f) {
+    float wl = water_level_at(c->pos.x, c->pos.z);
+    if (!c->sunk && water_at(c->pos.x, c->pos.z) && c->pos.y < wl + 0.3f) {
         c->sunk = true;
         c->sink_t = 0;
-        audio_play(SFX_SPLASH, c->pos.x, WATER_Y, c->pos.z, 1, 0.8f);
-        for (int i = 0; i < 30; i++) spawn_part(V(c->pos.x + frs() * 2, WATER_Y, c->pos.z + frs() * 2), V(frs() * 3, 4 + frand() * 5, frs() * 3), V(0.6f, 0.7f, 0.75f), 1.2f, 0.25f, PK_SMOKE, 0.5f, 12);
+        audio_play(SFX_SPLASH, c->pos.x, wl, c->pos.z, 1, 0.8f);
+        for (int i = 0; i < 30; i++) spawn_part(V(c->pos.x + frs() * 2, wl, c->pos.z + frs() * 2), V(frs() * 3, 4 + frand() * 5, frs() * 3), V(0.6f, 0.7f, 0.75f), 1.2f, 0.25f, PK_SMOKE, 0.5f, 12);
     }
     if (c->sunk) {
         c->sink_t += dt;
@@ -416,22 +436,34 @@ typedef struct {
     v3 shirt, pants, skin, hair;
     float h, spin, tumble;
     bool cop;
-    int fare, xnode, xaxis;
+    int fare, xnode, xaxis, city;
+    unsigned seed;
     float wait_t;
 } Ped;
 #define MAXPED 110
 static Ped ped[MAXPED];
 static const v3 SKIN[] = {{0.85f, 0.65f, 0.5f}, {0.6f, 0.42f, 0.3f}, {0.38f, 0.25f, 0.17f}, {0.92f, 0.75f, 0.62f}, {0.25f, 0.16f, 0.11f}};
 static const v3 CLOTH[] = {{0.6f, 0.1f, 0.1f}, {0.1f, 0.2f, 0.5f}, {0.85f, 0.85f, 0.82f}, {0.1f, 0.1f, 0.12f}, {0.2f, 0.45f, 0.2f}, {0.75f, 0.6f, 0.2f}, {0.45f, 0.2f, 0.45f}, {0.2f, 0.5f, 0.6f}, {0.55f, 0.4f, 0.3f}};
-static v3 perim_pt(int bi, int bj, float s) {
+static v3 perim_pt(int c, int bi, int bj, float s) {
     float L = PITCH - 2 * WALK;
     s = fmodf(s, 4 * L);
     if (s < 0) s += 4 * L;
-    float x0 = bi * PITCH + WALK, z0 = bj * PITCH + WALK, x1 = (bi + 1) * PITCH - WALK, z1 = (bj + 1) * PITCH - WALK;
-    if (s < L) return V(x0 + s, 0, z0);
-    if (s < 2 * L) return V(x1, 0, z0 + (s - L));
-    if (s < 3 * L) return V(x1 - (s - 2 * L), 0, z1);
-    return V(x0, 0, z1 - (s - 3 * L));
+    City *C = &cities[c];
+    float x0 = C->x0 + bi * PITCH + WALK, z0 = C->z0 + bj * PITCH + WALK, x1 = C->x0 + (bi + 1) * PITCH - WALK, z1 = C->z0 + (bj + 1) * PITCH - WALK;
+    float y = C->gy + 0.15f;
+    if (s < L) return V(x0 + s, y, z0);
+    if (s < 2 * L) return V(x1, y, z0 + (s - L));
+    if (s < 3 * L) return V(x1 - (s - 2 * L), y, z1);
+    return V(x0, y, z1 - (s - 3 * L));
+}
+/* which city block a point belongs to (false outside the cities) */
+static bool block_of(v3 p, int *c, int *bi, int *bj) {
+    *c = city_at(p.x, p.z, 0);
+    if (*c < 0) return false;
+    City *C = &cities[*c];
+    *bi = (int)clampf(floorf((p.x - C->x0) / PITCH), 0, C->nx - 1);
+    *bj = (int)clampf(floorf((p.z - C->z0) / PITCH), 0, C->nz - 1);
+    return true;
 }
 static Ped *spawn_ped(v3 pos, bool cop) {
     for (int i = 0; i < MAXPED; i++) {
@@ -449,6 +481,9 @@ static Ped *spawn_ped(v3 pos, bool cop) {
         p->speed = 1.1f + frand() * 0.5f;
         p->dirn = frand() < 0.5f ? 1 : -1;
         p->fare = -1;
+        p->seed = hashu((unsigned)i * 2654435761u + (unsigned)(pos.x * 7 + pos.z * 13));
+        block_of(pos, &p->city, &p->bi, &p->bj);
+        if (p->city < 0) p->city = 0;
         return p;
     }
     return NULL;
@@ -477,27 +512,28 @@ static void scare_nearby(v3 at, float radius, float secs) {
 
 /* ================================================================== street props: lamp posts at every road corner */
 typedef struct { v3 pos, vel, rot, spin; bool down; float t; } Prop;
-#define NPROP ((NB + 1) * (NB + 1) * 4)
+#define NPROP (MAXNODE * 4)
 static Prop prop[NPROP];
-static bool prop_exists(int idx) {
-    int n = idx / 4, i = n / (NB + 1), j = n % (NB + 1);
-    return node_any(i, j);
-}
+static bool prop_exists(int idx) { int n = idx / 4; return n < nnode && nodes[n].city >= 0; }
 static v3 prop_home(int idx) {
-    int n = idx / 4, k = idx % 4, i = n / (NB + 1), j = n % (NB + 1);
-    return add(node_pos(i, j), V(k & 1 ? 7.6f : -7.6f, 0, k & 2 ? 7.6f : -7.6f));
+    int n = idx / 4, k = idx % 4;
+    return add(nodes[n].p, V(k & 1 ? 7.6f : -7.6f, 0.15f, k & 2 ? 7.6f : -7.6f));
 }
 static void props_init(void) {
-    for (int i = 0; i < NPROP; i++) { prop[i].pos = prop_home(i); prop[i].down = false; }
+    for (int i = 0; i < NPROP; i++) { prop[i].pos = prop_exists(i) ? prop_home(i) : V(0, -100, 0); prop[i].down = false; }
+}
+static int city_node_near(v3 p) {
+    int c = city_at(p.x, p.z, 10);
+    if (c < 0) return -1;
+    City *C = &cities[c];
+    int i = (int)clampf(floorf((p.x - C->x0) / PITCH + 0.5f), 0, C->nx), j = (int)clampf(floorf((p.z - C->z0) / PITCH + 0.5f), 0, C->nz);
+    return city_node(c, i, j);
 }
 static void props_near(v3 p, int *out, int *n) {
-    int ni, nj;
-    nearest_node(p, &ni, &nj);
     *n = 0;
-    for (int k = 0; k < 4; k++) {
-        int idx = (ni * (NB + 1) + nj) * 4 + k;
-        if (prop_exists(idx)) out[(*n)++] = idx;
-    }
+    int nd = city_node_near(p);
+    if (nd < 0) return;
+    for (int k = 0; k < 4; k++) out[(*n)++] = nd * 4 + k;
 }
 static void knock_prop(int idx, v3 vel) {
     Prop *q = &prop[idx];
@@ -525,7 +561,7 @@ static void update_props(float dt) {
             if (q->rot.x < -1.5f) q->rot.x = -1.5f, q->spin.x = 0;
             if (q->rot.z > 1.5f) q->rot.z = 1.5f, q->spin.z = 0;
             if (q->rot.z < -1.5f) q->rot.z = -1.5f, q->spin.z = 0;
-            float g = terrain_h(q->pos.x, q->pos.z);
+            float g = ground_at(q->pos.x, q->pos.z, q->pos.y + 0.5f, 0.2f);
             if (q->pos.y < g) { q->pos.y = g; q->vel = mul(q->vel, 0.3f); q->vel.y = 0; }
         }
         /* respawn out of sight */
@@ -589,36 +625,43 @@ static bool in_view(v3 p, float margin) {
     if (l < 1) return true;
     return dot(mul(d, 1 / l), cam.fwd) > cosf((cam.fov * 0.5f + margin) * 3.14159f / 180 * 1.35f);
 }
-static int pick_model(int district) {
+static int pick_model(int style) {
     float r = frand();
-    if (r < 0.03f && district != D_PARK) return VM_BUS;
-    switch (district) {
-    case D_CENTER: return r < 0.35f ? VM_TAXI : r < 0.5f ? VM_SPORTS : r < 0.6f ? VM_VAN : VM_SEDAN;
-    case D_DOCKS: case D_EASTGATE: return r < 0.35f ? VM_VAN : r < 0.65f ? VM_PICKUP : r < 0.72f ? VM_MUSCLE : VM_SEDAN;
-    case D_SEABRIGHT: return r < 0.2f ? VM_SPORTS : r < 0.35f ? VM_MUSCLE : r < 0.5f ? VM_PICKUP : VM_SEDAN;
-    default: return r < 0.12f ? VM_TAXI : r < 0.22f ? VM_VAN : r < 0.3f ? VM_MUSCLE : r < 0.36f ? VM_SPORTS : r < 0.46f ? VM_PICKUP : VM_SEDAN;
+    if (r < 0.03f && style != ST_PARK) return VM_BUS;
+    switch (style) {
+    case ST_DOWNTOWN: case ST_MIDRISE: return r < 0.3f ? VM_TAXI : r < 0.45f ? VM_SPORTS : r < 0.55f ? VM_VAN : VM_SEDAN;
+    case ST_INDUSTRIAL: return r < 0.35f ? VM_VAN : r < 0.65f ? VM_PICKUP : r < 0.72f ? VM_MUSCLE : VM_SEDAN;
+    case ST_BEACH: case ST_MANSION: return r < 0.25f ? VM_SPORTS : r < 0.4f ? VM_MUSCLE : r < 0.5f ? VM_PICKUP : VM_SEDAN;
+    case ST_DESERT: case ST_MOUNTAIN: return r < 0.4f ? VM_PICKUP : r < 0.55f ? VM_VAN : r < 0.7f ? VM_MUSCLE : VM_SEDAN;
+    default: return r < 0.1f ? VM_TAXI : r < 0.22f ? VM_VAN : r < 0.3f ? VM_MUSCLE : r < 0.36f ? VM_SPORTS : r < 0.48f ? VM_PICKUP : VM_SEDAN;
     }
 }
 static int traffic_target = 38;
 static bool spawn_traffic(float rmin, float rmax, bool allow_visible) {
     v3 fp = focus_pos();
-    for (int tries = 0; tries < 12; tries++) {
+    for (int tries = 0; tries < 14; tries++) {
         float a = frand() * 6.2831853f, d = rmin + frand() * (rmax - rmin);
         v3 p = add(fp, V(cosf(a) * d, 0, sinf(a) * d));
-        int i, j;
-        nearest_node(p, &i, &j);
-        int dir = rand() % 4;
-        if (!edge_ok(i, j, dir)) continue;
-        float s = 14 + frand() * (PITCH - 30);
-        v3 at = lane_pt(i, j, dir, s, LANE_OFF);
+        float ed, s;
+        int e = nearest_edge(p, 90, &ed, &s);
+        if (e < 0 || edges[e].bridge && frand() < 0.5f) continue;
+        int from = frand() < 0.5f ? edges[e].a : edges[e].b;
+        float L = edges[e].len, i0 = nodes[from].inset + 4, i1 = nodes[edge_other(e, from)].inset + 7;
+        if (L - i0 - i1 < 4) continue;
+        float sp = i0 + frand() * (L - i0 - i1);
+        Car tmp;
+        memset(&tmp, 0, sizeof(tmp));
+        tmp.lane_i = frand() < 0.5f;
+        v3 at = lane_pos(e, from, sp, lane_off(&tmp, e));
         if (!allow_visible && in_view(at, 10) && dist2d(at, cam.pos) < 260) continue;
         if (car_near(at, 12)) continue;
-        int dist = dist_blk[clampf(i, 0, NB - 1) == i ? i : NB - 1][j < NB ? j : NB - 1];
-        Car *c = spawn_car(frand() < 0.05f ? VM_POLICE : pick_model(dist), at, 0, DRV_AI);
+        int style = dstyle[district_at(at)];
+        Car *c = spawn_car(frand() < 0.05f ? VM_POLICE : pick_model(style), at, 0, DRV_AI);
         if (!c) return false;
-        place_on_edge(c, i, j, dir, s);
-        c->pos.y = 0;
-        c->vel = mul(fwd_of(c->yaw), 8);
+        c->lane_i = tmp.lane_i;
+        place_on_edge(c, e, from, sp);
+        c->pos.y = ground_at(c->pos.x, c->pos.z, c->pos.y + 1, 0.5f);
+        c->vel = mul(fwd_of(c->yaw), edges[e].hwy >= 0 ? 18 : 8);
         return true;
     }
     return false;
@@ -647,17 +690,17 @@ static void spawn_peds(float rmin, float rmax, int n) {
     for (int k = 0; k < n; k++) {
         float a = frand() * 6.2831853f, d = rmin + frand() * (rmax - rmin);
         v3 p = add(fp, V(cosf(a) * d, 0, sinf(a) * d));
-        int bi = (int)floorf(p.x / PITCH), bj = (int)floorf(p.z / PITCH);
-        if (bi < 0 || bj < 0 || bi >= NB || bj >= NB) continue;
-        int dd = dist_blk[bi][bj];
-        float dens = dd == D_CENTER ? 1 : dd == D_DOCKS ? 0.25f : dd == D_EASTGATE ? 0.4f : dd == D_PARK ? 0.7f : 0.7f;
+        int c, bi, bj;
+        if (!block_of(p, &c, &bi, &bj)) continue;
+        int st = dstyle[block_dist(c, bi, bj)];
+        float dens = st == ST_DOWNTOWN || st == ST_MIDRISE || st == ST_OLD ? 1 : st == ST_INDUSTRIAL ? 0.25f : st == ST_BEACH ? 0.8f : 0.55f;
         if (frand() > dens) continue;
         float s = frand() * 4 * (PITCH - 2 * WALK);
-        v3 at = perim_pt(bi, bj, s);
+        v3 at = perim_pt(c, bi, bj, s);
         if (dist2d(at, cam.pos) < 60 && in_view(at, 5)) continue;
         Ped *q = spawn_ped(at, false);
         if (!q) return;
-        q->bi = bi; q->bj = bj; q->s = s;
+        q->city = c; q->bi = bi; q->bj = bj; q->s = s;
     }
 }
 
@@ -707,34 +750,32 @@ static void steer_to(Car *c, v3 target, float dt) {
 }
 static void drive_ai(Car *c, float dt) {
     float sp = car_speed(c);
-    if (c->nwp < 4) plan_turn(c, random_turn(c->ni, c->nj, c->ndir), LANE_OFF);
+    if (c->nwp < 4) plan_turn(c, random_turn(c));
     /* pop reached waypoints */
     for (int k = 0; k < 3 && c->nwp > 0; k++) {
         v3 d = sub(c->wp[0], c->pos);
         float dd = len2d(d);
         if (c->wstop[0] >= 0) {
-            int ni = c->wstop[0] / (NB + 1), nj = c->wstop[0] % (NB + 1);
             if (dd < 3.5f) {
-                int ls = light_state(ni, nj, c->ndir);
+                int ls = light_state(c->wstop[0], c->wdir[0]);
                 if (ls == 0 || c->panic_t > 0 || dot(d, fwd_of(c->yaw)) < -1) { wp_pop(c); continue; }
             }
             break;
         }
-        if (dd < 5.5f || (dd < 10 && dot(d, fwd_of(c->yaw)) < 0)) wp_pop(c);
+        if (dd < 5.5f + fabsf(sp) * 0.15f || (dd < 12 && dot(d, fwd_of(c->yaw)) < 0)) wp_pop(c);
         else break;
     }
-    if (c->nwp < 4) plan_turn(c, random_turn(c->ni, c->nj, c->ndir), LANE_OFF);
+    if (c->nwp < 4) plan_turn(c, random_turn(c));
     v3 tgt = c->wp[0];
     if (c->nwp > 1 && c->wstop[0] < 0 && len2d(sub(c->wp[0], c->pos)) < 9) tgt = lerp3(c->wp[0], c->wp[1], 0.4f);
     steer_to(c, tgt, dt);
-    float want = c->panic_t > 0 ? 20 : c->cruise;
+    float want = c->panic_t > 0 ? fmaxf(20, c->wspd[0]) : c->wspd[0];
     float err = fabsf(wrap_pi(yaw_of(sub(tgt, c->pos)) - c->yaw));
     if (err > 0.25f) want = fminf(want, 7.5f);
     /* red light ahead */
     for (int k = 0; k < c->nwp && k < 3; k++) {
         if (c->wstop[k] < 0) continue;
-        int ni = c->wstop[k] / (NB + 1), nj = c->wstop[k] % (NB + 1);
-        int ls = light_state(ni, nj, c->ndir);
+        int ls = light_state(c->wstop[k], c->wdir[k]);
         if (ls != 0 && c->panic_t <= 0) {
             float dstop = len2d(sub(c->wp[k], c->pos));
             if (ls == 2 || dstop > 10) want = fminf(want, fmaxf(0, (dstop - 2.5f) * 0.6f));
@@ -782,13 +823,11 @@ static void drive_cop(Car *c, float dt) {
     if (G.stars == 0) { /* stand down: rejoin traffic */
         c->driver = DRV_AI;
         c->siren = false;
-        int i, j;
-        nearest_road_node(c->pos, &i, &j);
+        int n = nearest_road_node(c->pos);
         c->nwp = 0;
-        c->ni = i; c->nj = j;
-        c->ndir = 0;
-        for (int k = 0; k < 4; k++) if (edge_ok(i, j, k)) { c->ndir = (k + 2) % 4; break; }
-        wp_push(c, add(node_pos(i, j), V(0, 0, 0)), -1);
+        c->tn = n;
+        c->te = nodes[n].e[0];
+        wp_push(c, nodes[n].p, -1, norm(sub(nodes[n].p, c->pos)), c->cruise);
         return;
     }
     bool direct = d < 55 && ray_world(add(c->pos, V(0, 1, 0)), norm(sub(add(tp, V(0, 1, 0)), add(c->pos, V(0, 1, 0)))), d) >= d - 1;
@@ -801,14 +840,12 @@ static void drive_cop(Car *c, float dt) {
         if (pv < 15) want = fminf(want, sqrtf(fmaxf(0, 2 * 12 * (d - 5.4f))) + pv * 0.8f);
     } else {
         if (c->nwp == 0 || len2d(sub(c->wp[0], c->pos)) < 9) {
-            int i, j;
-            if (c->nwp == 0) nearest_road_node(c->pos, &i, &j);
-            else { i = c->ni; j = c->nj; }
-            int dir = route_next_dir(&cop_route, i, j, (c->ndir + 2) % 4);
+            int n = c->nwp == 0 || c->tn < 0 ? nearest_road_node(c->pos) : c->tn;
+            int e = route_next_edge(&cop_route, n, c->te);
             c->nwp = 0;
-            if (dir < 0) { target = tp; goto steer; }
-            c->ni = i + DX[dir]; c->nj = j + DZ[dir]; c->ndir = dir;
-            wp_push(c, lane_pt(i, j, dir, PITCH, 1.2f), -1);
+            if (e < 0) { target = tp; goto steer; }
+            c->te = e; c->tn = edge_other(e, n);
+            wp_push(c, lane_pos(e, n, edges[e].len, 1.2f), -1, edge_dir(e, n), want);
         }
         target = c->wp[0];
         float err = fabsf(wrap_pi(yaw_of(sub(target, c->pos)) - c->yaw));
@@ -842,16 +879,14 @@ static bool spawn_cop(float rmin, float rmax) {
     for (int t = 0; t < 16; t++) {
         float a = frand() * 6.2831853f, d = rmin + frand() * (rmax - rmin);
         v3 p = add(fp, V(cosf(a) * d, 0, sinf(a) * d));
-        int i, j;
-        nearest_node(p, &i, &j);
-        if (!node_any(i, j)) continue;
-        v3 at = node_pos(i, j);
+        int n = nearest_road_node(p);
+        v3 at = nodes[n].p;
         if (car_near(at, 10)) continue;
         if (in_view(at, 0) && dist2d(at, cam.pos) < 140) continue;
         Car *c = spawn_car(VM_POLICE, at, yaw_of(sub(fp, at)), DRV_COP);
         if (!c) return false;
         c->siren = true;
-        c->ni = i; c->nj = j;
+        c->tn = n; c->te = -1; c->nwp = 0;
         c->vel = mul(fwd_of(c->yaw), 10);
         return true;
     }
@@ -862,10 +897,7 @@ static void spawn_roadblock(void) {
     Car *pc = &car[PL.car];
     if (car_speed(pc) < 10) return;
     v3 ahead = add(pc->pos, mul(norm(pc->vel), 150));
-    int i, j;
-    nearest_node(ahead, &i, &j);
-    if (!node_any(i, j) || in_view(node_pos(i, j), -15) == false) { /* fine either way */ }
-    v3 c0 = node_pos(i, j);
+    v3 c0 = nodes[nearest_road_node(ahead)].p;
     if (dist2d(c0, pc->pos) < 90 || car_near(c0, 14)) return;
     for (int k = -1; k <= 1; k += 2) {
         Car *c = spawn_car(VM_POLICE, add(c0, V(k * 2.7f, 0, k * 1.0f)), 0.3f + k * 0.2f + yaw_of(pc->vel) + 1.5708f, DRV_COP);
@@ -887,11 +919,11 @@ static void update_peds(float dt) {
         switch (p->state) {
         case PS_WALK: {
             p->s += p->speed * p->dirn * dt;
-            v3 t = perim_pt(p->bi, p->bj, p->s + p->dirn * 1.5f);
+            v3 t = perim_pt(p->city, p->bi, p->bj, p->s + p->dirn * 1.5f);
             v3 d = sub(t, p->pos);
             d.y = 0;
             want_v = mul(norm(d), p->speed);
-            if (len2d(sub(perim_pt(p->bi, p->bj, p->s), p->pos)) > 6) { p->state = PS_RETURN; p->target = perim_pt(p->bi, p->bj, p->s); }
+            if (len2d(sub(perim_pt(p->city, p->bi, p->bj, p->s), p->pos)) > 6) { p->state = PS_RETURN; p->target = perim_pt(p->city, p->bi, p->bj, p->s); }
             float L = PITCH - 2 * WALK;
             float sm = fmodf(fmodf(p->s, 4 * L) + 4 * L, 4 * L);
             float corner = fmodf(sm, L);
@@ -902,17 +934,17 @@ static void update_peds(float dt) {
                     int ndx[4][2][2] = {{{-1, 0}, {0, -1}}, {{1, 0}, {0, -1}}, {{1, 0}, {0, 1}}, {{-1, 0}, {0, 1}}};
                     int pick = rand() % 2;
                     int nbi = p->bi + ndx[ci][pick][0], nbj = p->bj + ndx[ci][pick][1];
-                    if (nbi >= 0 && nbj >= 0 && nbi < NB && nbj < NB) {
+                    if (nbi >= 0 && nbj >= 0 && nbi < cities[p->city].nx && nbj < cities[p->city].nz) {
                         /* the matching corner of the neighbour block is mirrored across the road */
                         int mc = pick == 0 ? (ci == 0 ? 1 : ci == 1 ? 0 : ci == 2 ? 3 : 2) : (ci == 0 ? 3 : ci == 3 ? 0 : ci == 1 ? 2 : 1);
                         int cn[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-                        p->xnode = (p->bi + cn[ci][0]) * (NB + 1) + (p->bj + cn[ci][1]);
+                        p->xnode = city_node(p->city, p->bi + cn[ci][0], p->bj + cn[ci][1]);
                         p->xaxis = pick == 0 ? 1 : 0;
                         p->wait_t = 0;
                         p->state = PS_WAITX;
                         p->bi = nbi; p->bj = nbj;
                         p->s = mc * L;
-                        p->target = perim_pt(nbi, nbj, p->s);
+                        p->target = perim_pt(p->city, nbi, nbj, p->s);
                     }
                 }
             }
@@ -922,10 +954,9 @@ static void update_peds(float dt) {
         case PS_WAITX: {
             /* wait at the kerb for the traffic on the road being crossed to get a red light */
             v3 mid = mul(add(p->pos, p->target), 0.5f);
-            int ni = p->xnode / (NB + 1), nj = p->xnode % (NB + 1);
             bool ok;
             if (!on_road(mid.x, mid.z, 0)) ok = true;
-            else if (node_degree(ni, nj) >= 3) ok = light_state(ni, nj, p->xaxis) == 2;
+            else if (nodes[p->xnode].light) ok = light_state(p->xnode, p->xaxis ? V(0, 0, 1) : V(1, 0, 0)) == 2;
             else {
                 ok = true;
                 for (int k = 0; k < MAXCAR && ok; k++)
@@ -952,13 +983,14 @@ static void update_peds(float dt) {
             want_v = mul(norm(d), 4.8f);
             p->timer -= dt;
             if (p->timer <= 0 || len2d(d) < 1) {
-                int bi = (int)clampf(floorf(p->pos.x / PITCH), 0, NB - 1), bj = (int)clampf(floorf(p->pos.z / PITCH), 0, NB - 1);
-                p->bi = bi; p->bj = bj;
+                int c, bi, bj;
+                if (!block_of(p->pos, &c, &bi, &bj)) { p->on = false; continue; }
+                p->city = c; p->bi = bi; p->bj = bj;
                 /* nearest perimeter parameter */
                 float best = 1e9f, bs = 0, L = PITCH - 2 * WALK;
-                for (float s = 0; s < 4 * L; s += 2) { float dd = dist2d(perim_pt(bi, bj, s), p->pos); if (dd < best) { best = dd; bs = s; } }
+                for (float s = 0; s < 4 * L; s += 2) { float dd = dist2d(perim_pt(c, bi, bj, s), p->pos); if (dd < best) { best = dd; bs = s; } }
                 p->s = bs;
-                p->target = perim_pt(bi, bj, bs);
+                p->target = perim_pt(c, bi, bj, bs);
                 p->state = PS_RETURN;
             }
             break;
@@ -990,7 +1022,7 @@ static void update_peds(float dt) {
             break;
         }
         case PS_COP: {
-            if (G.stars == 0) { p->state = PS_RETURN; p->target = perim_pt(p->bi, p->bj, 0); p->cop = true; break; }
+            if (G.stars == 0) { p->state = PS_RETURN; p->target = perim_pt(p->city, p->bi, p->bj, 0); p->cop = true; break; }
             v3 d = sub(pp, p->pos);
             d.y = 0;
             want_v = mul(norm(d), p->speed);
@@ -1221,9 +1253,7 @@ static void update_cars(float dt) {
     v3 fp = focus_pos();
     /* police route field toward the player, refreshed a few times per second */
     if (G.stars > 0 && ++cop_route_frame % 15 == 0) {
-        int i, j;
-        nearest_road_node(fp, &i, &j);
-        route_build(&cop_route, i, j);
+        route_build(&cop_route, nearest_road_node(fp));
     }
     for (int i = 0; i < MAXCAR; i++) {
         Car *c = &car[i];
