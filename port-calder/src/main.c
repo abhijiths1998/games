@@ -35,12 +35,7 @@
 #include "models.c"
 
 /* ================================================================== scene assembly */
-static Mat paint(v3 c) { Mat m = {c, PAT_PAINT, 0.45f, 0.32f, {0, 0, 0}, 0}; return m; }
-static const Mat M_GLASS = {{0.02f, 0.025f, 0.03f}, PAT_PLAIN, 0.9f, 0.06f, {0, 0, 0}, 0};
-static const Mat M_TYRE = {{0.03f, 0.03f, 0.03f}, PAT_PLAIN, 0, 0.8f, {0, 0, 0}, 0};
-static const Mat M_RIM = {{0.6f, 0.6f, 0.62f}, PAT_PLAIN, 1, 0.25f, {0, 0, 0}, 0};
 static const Mat M_BLACK = {{0.025f, 0.025f, 0.028f}, PAT_PLAIN, 0.2f, 0.5f, {0, 0, 0}, 0};
-static const Mat M_BURNT = {{0.04f, 0.035f, 0.03f}, PAT_LEAF, 0.3f, 0.9f, {0, 0, 0}, 0};
 
 static void part_box(m4 M, v3 c, v3 s, const Mat *m) { inst(MS_CUBE, m4_mul(M, m4_box(c, s)), m); }
 
@@ -699,9 +694,13 @@ static void bot_drive(Input *in, v3 target, float cruise, float dt) {
     float sp = car_speed(c);
     in->fwd = sp < want ? 1 : (sp > want + 2 ? -1 : 0);
     in->side = clampf(err * 2.5f, -1, 1);
+    /* blocked nose to nose: back off and swing right, like a driver would */
+    static float blocked;
+    if (gap < 4.0f && fabsf(sp) < 0.5f && want < 1.5f) blocked += dt; else blocked = 0;
+    if (blocked > 3) { bot_back = 1.6f; blocked = 0; }
     if (fabsf(sp) < 1 && want > 3) bot_stuck += dt; else bot_stuck = fmaxf(0, bot_stuck - dt);
     if (bot_stuck > 2.5f) { bot_back = 1.2f; bot_stuck = 0; }
-    if (bot_back > 0) { bot_back -= dt; in->fwd = -1; in->side = -in->side; }
+    if (bot_back > 0) { bot_back -= dt; in->fwd = -1; in->side = bot_back > 0.8f ? -1 : -in->side; }
     if (gap < 4 && fabsf(sp) < 1) in->horn = true;
 }
 static void bot_put_in_car(v3 at, float yaw, int model) {
@@ -738,9 +737,8 @@ static int run_selftest(const char *dir) {
     CHECK(audio_selftest() == 0, "audio module self-test");
     int ninst = 0;
     for (int i = 0; i < MS_N; i++) { ninst += stat_count[i]; for (int t = 0; t < NTIER; t++) ninst += ST[t][i].n; }
-    int nhw = 0;
     float hwlen = 0;
-    for (int e = 0; e < nedge; e++) if (edges[e].hwy >= 0) { nhw++; hwlen += edges[e].len; }
+    for (int e = 0; e < nedge; e++) if (edges[e].hwy >= 0) hwlen += edges[e].len;
     printf("world: %d cities, %d road nodes, %d edges (%.1f km of highway), %d boxes, %d static instances, %d shops, %d POIs, %d ramps\n",
            NCITY, nnode, nedge, hwlen / 1000, nbox, ninst, nshop, npoi, nramp);
     /* connectivity: every city reachable from Los Angeles by road */
@@ -880,7 +878,6 @@ static int run_selftest(const char *dir) {
                 SHOT("02_malibu_coast_drive");
             }
         }
-        printf("    road trip end: car %.0f,%.0f speed %.1f bot_n %d bot_e %d tn %d\n", car[PL.car].pos.x, car[PL.car].pos.z, car_speed(&car[PL.car]), bot_n, bot_e, bot_tn);
         CHECK(dist2d(car[PL.car].pos, target) <= 25, "drove Los Angeles to Santa Barbara in %.0f s (%.1f km)", t, G.stat_dist / 1000);
     }
     /* courier job */
@@ -987,7 +984,7 @@ static int run_selftest(const char *dir) {
     /* explosion */
     {
         new_game();
-        float yaw;
+        float yaw = 0;
         bot_put_in_car(city_lane(C_LA, 14, 3, 0, 1, 20, &yaw), yaw, VM_SEDAN);
         car[PL.car].hp = 5;
         Input in = {0};
@@ -1042,21 +1039,21 @@ static int run_selftest(const char *dir) {
     }
     /* scenery across the state */
     struct { const char *name; v3 eye, at; float tod, rain; } views[] = {
-        {"05_downtown_la", {5150, 3, 7300}, {5200, 60, 7360}, 18.2f, 0},
-        {"06_santa_monica_pier", {4330, 14, 7280}, {4140, 20, 7316}, 18.9f, 0},
-        {"07_golden_gate", {1600, 40, 3700}, {1378, 60, 3420}, 17.8f, 0},
-        {"08_sf_victorians", {1250 + 4 * PITCH + 30, 2.0f, 3640 + 3 * PITCH + 3}, {1250 + 4 * PITCH - 20, 6, 3640 + 3 * PITCH + 12}, 15.0f, 0},
-        {"09_bay_bridge_night", {1960, 30, 3900}, {2300, 20, 3832}, 21.5f, 0},
-        {"10_big_sur", {2250, 60, 5700}, {2100, 20, 5550}, 16.5f, 0},
-        {"11_yosemite", {3560, 150, 4110}, {4040, 200, 4070}, 11.0f, 0},
-        {"12_lake_tahoe", {3430, 140, 3150}, {3430, 108, 2700}, 9.0f, 0},
-        {"13_death_valley", {5600, 40, 5600}, {5720, 0, 5250}, 15.5f, 0},
-        {"14_palm_springs_wind", {5600, 40, 7520}, {5850, 30, 7480}, 18.5f, 0},
-        {"15_central_valley", {3300, 50, 4700}, {3500, 5, 4500}, 12.0f, 0},
-        {"16_napa_vineyards", {2150, 30, 3000}, {2050, 10, 2850}, 17.0f, 0},
-        {"17_mount_shasta", {1300, 80, 1100}, {1780, 300, 650}, 10.0f, 0},
-        {"18_redwoods", {600, 30, 1800}, {700, 40, 1700}, 13.0f, 0},
-        {"19_san_diego_harbor", {5450, 20, 8700}, {5330, 10, 8540}, 17.5f, 0},
+        {"05_downtown_la", {5100, 2, 7303}, {5200, 50, 7300}, 18.2f, 0},
+        {"06_santa_monica_pier", {4300, 6, 7300}, {4140, 15, 7316}, 18.9f, 0},
+        {"07_golden_gate", {1600, 30, 3700}, {1378, 40, 3420}, 17.8f, 0},
+        {"08_sf_victorians", {1250 + 4 * PITCH + 30, 1.8f, 3640 + 3 * PITCH + 3}, {1250 + 4 * PITCH - 20, 5, 3640 + 3 * PITCH + 12}, 15.0f, 0},
+        {"09_bay_bridge_night", {1960, 20, 3900}, {2300, 8, 3832}, 21.5f, 0},
+        {"10_big_sur", {2230, 25, 5720}, {2080, 0, 5520}, 16.5f, 0},
+        {"11_yosemite", {3560, 30, 4110}, {4040, 80, 4070}, 11.0f, 0},
+        {"12_lake_tahoe", {3430, 30, 3230}, {3430, 0, 2700}, 9.0f, 0},
+        {"13_death_valley", {5640, 25, 5600}, {5720, 0, 5250}, 15.5f, 0},
+        {"14_palm_springs_wind", {5600, 15, 7520}, {5850, 25, 7480}, 16.5f, 0},
+        {"15_central_valley", {3300, 40, 4700}, {3500, 0, 4500}, 12.0f, 0},
+        {"16_napa_vineyards", {2150, 15, 3000}, {2050, 0, 2850}, 17.0f, 0},
+        {"17_mount_shasta", {1450, 20, 1000}, {1780, 200, 650}, 10.0f, 0},
+        {"18_redwoods", {650, 2, 1800}, {700, 25, 1720}, 13.0f, 0},
+        {"19_san_diego_harbor", {5420, 15, 8660}, {5330, 5, 8540}, 17.5f, 0},
         {"20_rainy_sf_night", {1250 + 9 * PITCH + 4, 1.8f, 3640 + 4 * PITCH + 20}, {1250 + 9 * PITCH + 4, 30, 3640 + 1 * PITCH}, 22.0f, 0.9f},
     };
     for (size_t v = 0; v < sizeof(views) / sizeof(views[0]); v++) {
@@ -1066,6 +1063,9 @@ static int run_selftest(const char *dir) {
         G.tod = views[v].tod;
         for (int i = 0; i < 40; i++) spawn_traffic(10, 300, true);
         spawn_peds(5, 120, 60);
+        /* view heights are above the ground at each point */
+        views[v].eye.y += ground_at(views[v].eye.x, views[v].eye.z, 1000, 0.3f);
+        views[v].at.y += ground_at(views[v].at.x, views[v].at.z, 1000, 0.3f);
         setup_camera(views[v].eye, views[v].at, 70);
         for (int s = 0; s < 90; s++) sim_step(&none, 1 / 60.0f);
         G.tod = views[v].tod;

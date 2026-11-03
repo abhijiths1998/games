@@ -4,7 +4,7 @@ Small native Linux games written in C11 with SDL2. Everything (graphics, fonts, 
 
 | Game | What it is |
 |---|---|
-| [Port Calder](port-calder/) | Open-city driving sandbox in OpenGL 3.3: a 576-block island city with traffic, pedestrians, police chases, day/night, rain, radio, courier jobs, taxi fares, races, stunt jumps and collectibles. Needs a GPU. |
+| [Port Calder](port-calder/) | Open-world California road trip in OpenGL 3.3: the whole state scaled down, with 19 real cities, Interstate 5, US 101, the Pacific Coast Highway, the Golden Gate Bridge, mountains and deserts. It has traffic, police chases, hotels, restaurants, shops, fuel, day/night, rain and radio. Needs a GPU. |
 | [Hardlight](hardlight/) | Modern arena shooter in OpenGL 3.3: PBR lighting, shadows, HDR bloom, waves of drones, crawlers and sentinels. Needs a GPU. |
 | [Bramble Bound](bramble-bound/) | Side-scrolling platformer. Guide Bramble the fox through four worlds (meadow, sunset cliffs, glowing cave, frozen night) with parallax backgrounds, dynamic lighting, weather and a chiptune per world. |
 | [Orbit Golf](orbit-golf/) | Gravity mini-golf in space. Slingshot the ball around planets, black holes, wormholes and moving moons across 12 holes. |

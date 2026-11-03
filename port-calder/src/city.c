@@ -434,6 +434,7 @@ static void gas_station(float x0, float z0, float x1, float z1, const char *name
 }
 /* hotels: a tower in big cities, a classic motel elsewhere */
 static void hotel(float x0, float z0, float x1, float z1, const char *name, v3 col, bool tower, unsigned s) {
+    (void)z1;
     float cx = (x0 + x1) / 2;
     if (tower) {
         Mat podium = mat(V(0.78f, 0.74f, 0.66f), PAT_MIDRISE, 0, 0.7f);
@@ -478,6 +479,7 @@ static void hotel(float x0, float z0, float x1, float z1, const char *name, v3 c
 }
 static void restaurant(float x0, float z0, float x1, float z1, const char *name, v3 col, int menu, unsigned s) {
     float cx = (x0 + x1) / 2;
+    (void)z1;
     v3 wall = menu == MENU_MEXICAN ? V(0.92f, 0.62f, 0.38f) : menu == MENU_SEAFOOD ? V(0.55f, 0.70f, 0.82f) : menu == MENU_CHINESE ? V(0.70f, 0.15f, 0.12f)
             : menu == MENU_ITALIAN ? V(0.85f, 0.78f, 0.62f) : menu == MENU_FINE ? V(0.62f, 0.58f, 0.50f) : menu == MENU_BURGER ? V(0.95f, 0.92f, 0.85f) : V(0.70f, 0.55f, 0.40f);
     Mat m = mat(wall, menu == MENU_FINE ? PAT_MIDRISE : PAT_HOUSE, 0, 0.85f);
@@ -838,22 +840,41 @@ static const StopDef STOPS[] = {
 };
 static v3 baker_sign;
 static void build_stop(const StopDef *S) {
-    float d, s;
-    int e = nearest_edge(V(S->x, 0, S->z), 200, &d, &s);
-    if (e < 0) return;
-    v3 a = nodes[edges[e].a].p, D = edges[e].d;
-    v3 on = add(a, mul(D, clampf(s, 0, edges[e].len)));
-    float y = lerpf(nodes[edges[e].a].p.y, nodes[edges[e].b].p.y, clampf(s / edges[e].len, 0, 1));
-    v3 R = right_vec(D);
-    /* pick the side away from the sea */
-    v3 side = coast_sd(on.x + R.x * 60, on.z + R.z * 60) > coast_sd(on.x - R.x * 60, on.z - R.z * 60) ? R : mul(R, -1);
     int nk = 0;
     for (int k = 0; k < 3; k++) if (S->kinds[k] >= 0) nk++;
     /* an axis-aligned lot beside the highway; businesses in a row along x, entrances facing north */
     float hx = 50.0f * nk + 4, hz = 46;
     bool facing_z = true;
-    float off = (fabsf(side.z) > fabsf(side.x) ? hz : hx) / 2 + 24;
-    v3 c = add(on, mul(side, off));
+    v3 c = V(0, 0, 0);
+    float y = 0;
+    bool found = false;
+    /* slide along the highway and try both sides until the lot is clear of every road and of water */
+    float shifts[7] = {0, 80, -80, 160, -160, 240, -240};
+    for (int sh = 0; sh < 7 && !found; sh++) {
+        float d, s;
+        int e = nearest_edge(V(S->x, 0, S->z), 200, &d, &s);
+        if (e < 0) return;
+        v3 a = nodes[edges[e].a].p, D = edges[e].d;
+        v3 probe = add(add(a, mul(D, s)), mul(D, shifts[sh]));
+        e = nearest_edge(probe, 120, &d, &s);
+        if (e < 0 || edges[e].hwy < 0) continue;
+        a = nodes[edges[e].a].p; D = edges[e].d;
+        v3 on = add(a, mul(D, clampf(s, 0, edges[e].len)));
+        y = lerpf(nodes[edges[e].a].p.y, nodes[edges[e].b].p.y, clampf(s / edges[e].len, 0, 1));
+        v3 R = right_vec(D);
+        v3 side = coast_sd(on.x + R.x * 60, on.z + R.z * 60) > coast_sd(on.x - R.x * 60, on.z - R.z * 60) ? R : mul(R, -1);
+        float off = (fabsf(side.z) > fabsf(side.x) ? hz : hx) / 2 + 24;
+        for (int attempt = 0; attempt < 2 && !found; attempt++) {
+            c = add(on, mul(side, off));
+            bool clear = city_at(c.x, c.z, hx / 2 + 30) < 0;
+            for (float u = -0.5f; u <= 0.51f && clear; u += 0.125f)
+                for (float w = -0.5f; w <= 0.51f && clear; w += 0.25f)
+                    if (on_road(c.x + u * hx, c.z + w * hz, 4) || coast_sd(c.x + u * hx, c.z + w * hz) < 30) clear = false;
+            if (clear) found = true;
+            else side = mul(side, -1);
+        }
+    }
+    if (!found) return;
     add_pad(c.x - hx / 2, c.z - hz / 2, c.x + hx / 2, c.z + hz / 2, y, 60);
     GY = y;
     Mat slab = {{0.40f, 0.39f, 0.37f}, PAT_SIDEWALK, 0, 0.8f, {0, 0, 0}, 0};
@@ -861,8 +882,6 @@ static void build_stop(const StopDef *S) {
     add_box(V(c.x - hx / 2, 0, c.z - hz / 2), V(c.x + hx / 2, 0.1f, c.z + hz / 2));
     GY = y + 0.1f;
     /* businesses sit in 46 x 22 slots along the lot, entrances toward -z (north) or rotated by moving the lot */
-    int n = 0;
-    for (int k = 0; k < 3; k++) if (S->kinds[k] >= 0) n++;
     for (int k = 0, slot = 0; k < 3; k++) {
         if (S->kinds[k] < 0) continue;
         if (nshop >= MAXSHOP) break;
@@ -1075,15 +1094,6 @@ static void build_landmarks(void) {
     }
     /* San Diego: a retired aircraft carrier at the harbor */
     ship(5310, 8470, 5345, 8620, true);
-    /* Santa Barbara mission */
-    {
-        City *C = &cities[C_SB];
-        float x0 = C->x0 + 2 * PITCH + 12, z0 = C->z0 + 9;
-        GY = C->gy + 0.15f;
-        Mat w = mat(V(0.95f, 0.92f, 0.85f), PAT_HOUSE, 0, 0.8f);
-        (void)x0; (void)z0;
-        GY = 0;
-    }
     /* Sacramento capitol */
     {
         City *C = &cities[C_SAC];

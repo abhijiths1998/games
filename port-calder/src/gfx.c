@@ -647,7 +647,7 @@ static void clear_dynamic(void) { for (int i = 0; i < MS_N; i++) DI[i].n = 0; }
 
 /* ================================================================== GL state */
 static GLuint P_LIT, P_DEPTH, P_SKY, P_PART, P_DOWN, P_UP, P_COMP, P_HUD;
-static GLuint fbo_shadow, tex_shadow, tex_city;
+static GLuint fbo_shadow, tex_shadow;
 static GLuint fbo_msaa, rb_msaa_col, rb_msaa_dep, fbo_hdr, tex_hdr, fbo_ldr, tex_ldr;
 #define NMIP 6
 static GLuint fbo_mip[NMIP], tex_mip[NMIP];

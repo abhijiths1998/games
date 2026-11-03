@@ -644,7 +644,7 @@ static bool spawn_traffic(float rmin, float rmax, bool allow_visible) {
         v3 p = add(fp, V(cosf(a) * d, 0, sinf(a) * d));
         float ed, s;
         int e = nearest_edge(p, 90, &ed, &s);
-        if (e < 0 || edges[e].bridge && frand() < 0.5f) continue;
+        if (e < 0 || (edges[e].bridge && frand() < 0.5f)) continue;
         int from = frand() < 0.5f ? edges[e].a : edges[e].b;
         float L = edges[e].len, i0 = nodes[from].inset + 4, i1 = nodes[edge_other(e, from)].inset + 7;
         if (L - i0 - i1 < 4) continue;

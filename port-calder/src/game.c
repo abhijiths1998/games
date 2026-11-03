@@ -252,7 +252,7 @@ static void start_delivery(int poi_idx) {
     MS.poi = poi_idx;
     MS.target = random_destination(player_target_pos(), 450, frand() < 0.6f ? 1100 : 2600);
     MS.dist = dist2d(MS.target, player_target_pos());
-    MS.limit = MS.dist / (MS.dist > 1200 ? 13.0f : 11.5f) + 35;
+    MS.limit = MS.dist / (MS.dist > 1200 ? 12.0f : 11.0f) + 40;
     MS.timer = MS.limit;
     bigtext("COURIER JOB", "DELIVER THE PACKAGE BEFORE TIME RUNS OUT", 3);
     audio_play2d(SFX_PICKUP, 0.8f, 1);
@@ -1011,12 +1011,6 @@ static void map_xf(v3 p, float *sx, float *sy) {
     float lx = d.x * cs + d.z * sn, lz = -d.x * sn + d.z * cs;
     *sx = MAPV.ox + lx * MAPV.scale;
     *sy = MAPV.oy + lz * MAPV.scale;
-}
-static void map_rect(float x0, float z0, float x1, float z1, v3 col, float a) {
-    float ax, ay, bx, by;
-    map_xf(V((x0 + x1) / 2, 0, z0), &ax, &ay);
-    map_xf(V((x0 + x1) / 2, 0, z1), &bx, &by);
-    hline(ax, ay, bx, by, (x1 - x0) * MAPV.scale, col.x, col.y, col.z, a);
 }
 static void map_blip(v3 p, float r, v3 col, bool clamp_edge, char letter) {
     float x, y;

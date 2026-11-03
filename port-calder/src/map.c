@@ -65,7 +65,7 @@ static const P2 STRAIT[] = {{1000, 3255}, {2000, 3255}, {2000, 3600}, {1000, 360
 static const P2 BAY[] = {{1995, 3255}, {2385, 3255}, {2385, 4600}, {1995, 4600}};
 static const P2 MBAY[] = {{1650, 4985}, {2250, 4985}, {2250, 5112}, {1835, 5112}};
 typedef struct { float x, z, rx, rz, level; const char *name; } Lake;
-static const Lake LAKES[] = {{3430, 2760, 150, 210, 106, "LAKE TAHOE"}, {6450, 8150, 170, 330, -7, "SALTON SEA"}};
+static const Lake LAKES[] = {{3430, 2760, 150, 210, 106, "LAKE TAHOE"}, {6450, 8150, 170, 330, -0.8f, "SALTON SEA"}};
 #define NLAKE NP(LAKES)
 
 /* mountain ranges as ridge lines */
@@ -95,7 +95,7 @@ static City cities[NCITY] = {
     {"SANTA CRUZ", 1720, 4760, 4, 3, 5, 0, 0, ST_BEACH},         {"PALM SPRINGS", 6000, 7650, 5, 5, 15, 0, 0, ST_DESERT},
     {"REDDING", 1500, 1300, 4, 4, 17, 0, 0, ST_SUBURB},          {"EUREKA", 330, 1150, 4, 4, 5, 0, 0, ST_VICTORIAN},
     {"NAPA", 2000, 2900, 3, 3, 6, 0, 0, ST_SPANISH},             {"SOUTH LAKE TAHOE", 3330, 3020, 3, 3, 110, 0, 0, ST_MOUNTAIN},
-    {"BARSTOW", 5560, 6600, 3, 3, 70, 0, 0, ST_DESERT},          {"FURNACE CREEK", 5680, 5240, 2, 2, -5, 0, 0, ST_DESERT},
+    {"BARSTOW", 5560, 6600, 3, 3, 70, 0, 0, ST_DESERT},          {"FURNACE CREEK", 5680, 5240, 2, 2, 2, 0, 0, ST_DESERT},
     {"YOSEMITE VILLAGE", 3700, 4060, 2, 2, 120, 0, 0, ST_MOUNTAIN},
 };
 /* district names: cities split into real neighbourhoods; outside the cities, regions */
@@ -232,7 +232,6 @@ static v3 lane_pos(int e, int from, float s, float off) {
     return add(p, mul(right_vec(D), off));
 }
 static int city_node(int c, int i, int j) { return cities[c].node0 + i * (cities[c].nz + 1) + j; }
-static v3 node_pos(int n) { return nodes[n].p; }
 
 /* spatial index for edges and nodes */
 #define EG 64.0f
@@ -346,7 +345,7 @@ static float raw_land(float x, float z) {
     h = lerpf(h, 7 + fbm2(x * 0.004f, z * 0.004f, 2, 5) * 5, vf);
     /* basins: Death Valley, the Salton trough, Lake Tahoe */
     float dv = ((x - 5720) / 230) * ((x - 5720) / 230) + ((z - 5250) / 680) * ((z - 5250) / 680);
-    if (dv < 1.6f) h = lerpf(h, -5, 1 - smooth01(0.55f, 1.6f, dv));
+    if (dv < 1.6f) h = lerpf(h, 1.5f, 1 - smooth01(0.55f, 1.6f, dv));
     for (int l = 0; l < NLAKE; l++) {
         const Lake *L = &LAKES[l];
         float e = ((x - L->x) / L->rx) * ((x - L->x) / L->rx) + ((z - L->z) / L->rz) * ((z - L->z) / L->rz);
@@ -405,7 +404,7 @@ typedef struct { int city, i, j; float x, z; } HP;
 #define HEND {-2, 0, 0, 0, 0}
 typedef struct { const char *name; HP p[16]; } HwyDef;
 static const HwyDef HWYS[] = {
-    {"INTERSTATE 5", {CN(C_LA, 10, 0), PT(4650, 6800), PT(4380, 6600), PT(3950, 6000), PT(3550, 5500), PT(3250, 4900), PT(2950, 4300), PT(2750, 3700), CN(C_SAC, 2, 6), HEND}},
+    {"INTERSTATE 5", {CN(C_LA, 10, 0), PT(4650, 6800), PT(4380, 6600), PT(4010, 6460), PT(3935, 6160), PT(3800, 5850), PT(3550, 5500), PT(3250, 4900), PT(2950, 4300), PT(2890, 3720), CN(C_SAC, 2, 6), HEND}},
     {"INTERSTATE 5", {CN(C_SAC, 3, 0), PT(2300, 2500), PT(1750, 1900), CN(C_RED, 2, 4), HEND}},
     {"INTERSTATE 5", {CN(C_RED, 2, 0), PT(1520, 950), PT(1350, 500), PT(1330, 30), HEND}},
     {"INTERSTATE 5", {CN(C_LA, 14, 15), PT(5400, 8080), PT(5450, 8300), CN(C_SD, 2, 0), HEND}},
