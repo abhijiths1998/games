@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Port Calder
+Comment=Open-city driving sandbox
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;Simulation;
