@@ -4,6 +4,7 @@ Small native Linux games written in C11 with SDL2. Everything (graphics, fonts, 
 
 | Game | What it is |
 |---|---|
+| [Hardlight](hardlight/) | Modern arena shooter in OpenGL 3.3: PBR lighting, shadows, HDR bloom, waves of drones, crawlers and sentinels. Needs a GPU. |
 | [Bramble Bound](bramble-bound/) | Side-scrolling platformer. Guide Bramble the fox through four worlds (meadow, sunset cliffs, glowing cave, frozen night) with parallax backgrounds, dynamic lighting, weather and a chiptune per world. |
 | [Orbit Golf](orbit-golf/) | Gravity mini-golf in space. Slingshot the ball around planets, black holes, wormholes and moving moons across 12 holes. |
 | [Prism Smash](prism-smash/) | Neon brick-breaker with exploding chain bricks, ball-splitting prisms, 7 power-ups and 12 levels. |
@@ -22,7 +23,7 @@ Original games in the style of old DOS titles, sharing one retro toolkit. See [v
 
 ## Build
 
-You need a C compiler, `make`, `pkg-config` and the SDL2 development package (`sdl2` on Arch, `libsdl2-dev` on Debian/Ubuntu, `SDL2-devel` on Fedora).
+You need a C compiler, `make`, `pkg-config` and the SDL2 development package (`sdl2` on Arch, `libsdl2-dev` on Debian/Ubuntu, `SDL2-devel` on Fedora). Hardlight also needs the OpenGL development files (`mesa`, `libgl1-mesa-dev` or `mesa-libGL-devel`).
 
     make                 # build every game
     cd bramble-bound && make run

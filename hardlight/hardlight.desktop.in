@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Hardlight
+Comment=Arena shooter with a modern OpenGL renderer
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;ActionGame;Shooter;
