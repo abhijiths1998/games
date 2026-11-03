@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Deep Delve
+Comment=Descend ten floors and take the Hollow Star: an EGA text-mode roguelike
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;RolePlaying;

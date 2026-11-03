@@ -42,7 +42,7 @@ static SDL_Texture *rt_canvas, *rt_big, *rt_mask;
 static bool rt_crt = true;
 
 /* ------------------------------------------------------------------ video */
-static SDL_Texture *rt_make_mask(void) {
+static inline SDL_Texture *rt_make_mask(void) {
     int w = RT_W * RT_UP, h = RT_H * RT_UP;
     SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
     if (!s) return NULL;
@@ -68,7 +68,7 @@ static SDL_Texture *rt_make_mask(void) {
     return t;
 }
 
-static bool rt_init(const char *title) {
+static inline bool rt_init(const char *title) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return false;
@@ -91,7 +91,7 @@ static bool rt_init(const char *title) {
     return true;
 }
 
-static void rt_present(void) {
+static inline void rt_present(void) {
     int ww, wh;
     SDL_SetRenderTarget(rt_ren, NULL);
     SDL_GetRendererOutputSize(rt_ren, &ww, &wh);
@@ -112,7 +112,7 @@ static void rt_present(void) {
     SDL_SetRenderTarget(rt_ren, rt_canvas);
 }
 
-static void rt_shot(const char *path) {
+static inline void rt_shot(const char *path) {
     SDL_SetRenderTarget(rt_ren, rt_canvas);
     SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, RT_W, RT_H, 32, SDL_PIXELFORMAT_ARGB8888);
     if (!s) return;
@@ -122,21 +122,21 @@ static void rt_shot(const char *path) {
 }
 
 /* ------------------------------------------------------------------ drawing */
-static void rt_col(int c) { SDL_SetRenderDrawColor(rt_ren, rt_pal[c].r, rt_pal[c].g, rt_pal[c].b, 255); }
-static void rt_cls(int c) { rt_col(c); SDL_RenderClear(rt_ren); }
-static void rt_rect(int x, int y, int w, int h, int c) {
+static inline void rt_col(int c) { SDL_SetRenderDrawColor(rt_ren, rt_pal[c].r, rt_pal[c].g, rt_pal[c].b, 255); }
+static inline void rt_cls(int c) { rt_col(c); SDL_RenderClear(rt_ren); }
+static inline void rt_rect(int x, int y, int w, int h, int c) {
     SDL_Rect r = {x, y, w, h};
     rt_col(c);
     SDL_RenderFillRect(rt_ren, &r);
 }
-static void rt_frame(int x, int y, int w, int h, int c) {
+static inline void rt_frame(int x, int y, int w, int h, int c) {
     SDL_Rect r = {x, y, w, h};
     rt_col(c);
     SDL_RenderDrawRect(rt_ren, &r);
 }
-static void rt_px(int x, int y, int c) { rt_col(c); SDL_RenderDrawPoint(rt_ren, x, y); }
-static void rt_line(int x0, int y0, int x1, int y1, int c) { rt_col(c); SDL_RenderDrawLine(rt_ren, x0, y0, x1, y1); }
-static void rt_disc(int cx, int cy, int r, int c) {
+static inline void rt_px(int x, int y, int c) { rt_col(c); SDL_RenderDrawPoint(rt_ren, x, y); }
+static inline void rt_line(int x0, int y0, int x1, int y1, int c) { rt_col(c); SDL_RenderDrawLine(rt_ren, x0, y0, x1, y1); }
+static inline void rt_disc(int cx, int cy, int r, int c) {
     rt_col(c);
     for (int dy = -r; dy <= r; dy++) {
         int dx = (int)sqrtf((float)(r * r - dy * dy));
@@ -144,7 +144,7 @@ static void rt_disc(int cx, int cy, int r, int c) {
     }
 }
 /* DOS dialog box: filled, white double border */
-static void rt_box(int x, int y, int w, int h, int fill, int border) {
+static inline void rt_box(int x, int y, int w, int h, int fill, int border) {
     rt_rect(x, y, w, h, fill);
     rt_frame(x + 2, y + 2, w - 4, h - 4, border);
     rt_frame(x + 4, y + 4, w - 8, h - 8, border);
@@ -167,15 +167,15 @@ static const unsigned char RT_FONT[][7] = {
     {4,4,8,0,0,0,0},{2,4,8,8,8,4,2},{8,4,2,2,2,4,8},{0,0,31,0,31,0,0},{0,21,14,31,14,21,0},
 };
 
-static const unsigned char *rt_glyph(char ch) {
+static inline const unsigned char *rt_glyph(char ch) {
     char c = (ch >= 'a' && ch <= 'z') ? (char)(ch - 32) : ch;
     const char *at = c ? strchr(RT_FONT_CHARS, c) : NULL;
     return at ? RT_FONT[at - RT_FONT_CHARS] : NULL;
 }
-static int rt_text_w(const char *s, int sc) { return (int)strlen(s) * 8 * sc; }
+static inline int rt_text_w(const char *s, int sc) { return (int)strlen(s) * 8 * sc; }
 
 /* rowcol: optional 7 colours, one per glyph row (for gradient logos); else uses c */
-static void rt_text_ex(const char *s, int x, int y, int sc, int c, const int *rowcol) {
+static inline void rt_text_ex(const char *s, int x, int y, int sc, int c, const int *rowcol) {
     for (; *s; s++, x += 8 * sc) {
         const unsigned char *g = rt_glyph(*s);
         if (!g) continue;
@@ -189,19 +189,19 @@ static void rt_text_ex(const char *s, int x, int y, int sc, int c, const int *ro
         }
     }
 }
-static void rt_text(const char *s, int x, int y, int c) { rt_text_ex(s, x, y, 1, c, NULL); }
-static void rt_textc(const char *s, int y, int c) { rt_text(s, (RT_W - rt_text_w(s, 1)) / 2, y, c); }
-static void rt_text_sh(const char *s, int x, int y, int c) {
+static inline void rt_text(const char *s, int x, int y, int c) { rt_text_ex(s, x, y, 1, c, NULL); }
+static inline void rt_textc(const char *s, int y, int c) { rt_text(s, (RT_W - rt_text_w(s, 1)) / 2, y, c); }
+static inline void rt_text_sh(const char *s, int x, int y, int c) {
     rt_text(s, x + 1, y + 1, C_BLACK);
     rt_text(s, x, y, c);
 }
-static void rt_textc_sh(const char *s, int y, int c) { rt_text_sh(s, (RT_W - rt_text_w(s, 1)) / 2, y, c); }
+static inline void rt_textc_sh(const char *s, int y, int c) { rt_text_sh(s, (RT_W - rt_text_w(s, 1)) / 2, y, c); }
 
 /* ------------------------------------------------------------------ sprites from strings
  * '.' transparent, '0'-'9' and 'a'-'f' EGA colours, 'g' skin tone. */
 typedef struct { SDL_Texture *t; int w, h; } RtSpr;
 
-static RtSpr rt_sprite(const char *const *rows, int h) {
+static inline RtSpr rt_sprite(const char *const *rows, int h) {
     RtSpr sp = {NULL, (int)strlen(rows[0]), h};
     SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, sp.w, h, 32, SDL_PIXELFORMAT_ARGB8888);
     if (!s) return sp;
@@ -218,13 +218,13 @@ static RtSpr rt_sprite(const char *const *rows, int h) {
     if (sp.t) SDL_SetTextureBlendMode(sp.t, SDL_BLENDMODE_BLEND);
     return sp;
 }
-static void rt_draw(RtSpr sp, int x, int y, bool flip) {
+static inline void rt_draw(RtSpr sp, int x, int y, bool flip) {
     if (!sp.t) return;
     SDL_Rect d = {x, y, sp.w, sp.h};
     SDL_RenderCopyEx(rt_ren, sp.t, NULL, &d, 0, NULL, flip ? SDL_FLIP_HORIZONTAL : SDL_FLIP_NONE);
 }
 /* draw with every opaque pixel replaced by one colour (hit flashes, silhouettes) */
-static void rt_draw_tint(RtSpr sp, int x, int y, bool flip, int c) {
+static inline void rt_draw_tint(RtSpr sp, int x, int y, bool flip, int c) {
     if (!sp.t) return;
     SDL_SetTextureColorMod(sp.t, rt_pal[c].r, rt_pal[c].g, rt_pal[c].b);
     SDL_SetTextureBlendMode(sp.t, SDL_BLENDMODE_ADD);
@@ -245,7 +245,7 @@ static float rt_lp;
 static bool rt_mute;
 static int rt_rate = 44100;
 
-static void rt_audio_cb(void *u, Uint8 *stream, int len) {
+static inline void rt_audio_cb(void *u, Uint8 *stream, int len) {
     (void)u;
     float *out = (float *)stream;
     int n = len / (int)sizeof(float);
@@ -276,7 +276,7 @@ static void rt_audio_cb(void *u, Uint8 *stream, int len) {
         out[i] = rt_lp;
     }
 }
-static void rt_audio_init(void) {
+static inline void rt_audio_init(void) {
     if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return;
     SDL_AudioSpec want = {0}, have;
     want.freq = 44100;
@@ -287,7 +287,7 @@ static void rt_audio_init(void) {
     rt_adev = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (rt_adev) { rt_rate = have.freq; SDL_PauseAudioDevice(rt_adev, 0); }
 }
-static void rt_play(const RtNote *notes, int count, int prio) {
+static inline void rt_play(const RtNote *notes, int count, int prio) {
     if (!rt_adev || count <= 0) return;
     if (count > RT_QMAX) count = RT_QMAX;
     SDL_LockAudioDevice(rt_adev);
@@ -300,11 +300,11 @@ static void rt_play(const RtNote *notes, int count, int prio) {
     }
     SDL_UnlockAudioDevice(rt_adev);
 }
-static void rt_tone(float f0, float f1, int ms, int prio) {
+static inline void rt_tone(float f0, float f1, int ms, int prio) {
     RtNote n = {f0, f1, ms};
     rt_play(&n, 1, prio);
 }
-static bool rt_busy(void) { return rt_qn > 0; }
+static inline bool rt_busy(void) { return rt_qn > 0; }
 
 /* ------------------------------------------------------------------ input */
 typedef struct { bool l, r, u, d, jump, fire, jet, ok, back; } RtBtn;
@@ -312,7 +312,7 @@ static RtBtn rt_held, rt_prev;
 static SDL_GameController *rt_pad;
 #define RT_HIT(f) (rt_held.f && !rt_prev.f)
 
-static void rt_poll(void) {
+static inline void rt_poll(void) {
     rt_prev = rt_held;
     const Uint8 *k = SDL_GetKeyboardState(NULL);
     RtBtn b = {0};
@@ -347,7 +347,7 @@ static void rt_poll(void) {
 }
 
 /* handles pad hot-plug, F2 (CRT) and F11 (fullscreen); returns true if it used the event */
-static bool rt_event(const SDL_Event *e) {
+static inline bool rt_event(const SDL_Event *e) {
     switch (e->type) {
     case SDL_CONTROLLERDEVICEADDED:
         if (!rt_pad) rt_pad = SDL_GameControllerOpen(e->cdevice.which);
@@ -377,7 +377,7 @@ typedef struct { char name[4]; int score, level; } RtScore;
 static RtScore rt_scores[RT_NSCORES];
 static char rt_score_path[1024];
 
-static void rt_scores_load(const char *app, const RtScore *defaults) {
+static inline void rt_scores_load(const char *app, const RtScore *defaults) {
     memcpy(rt_scores, defaults, sizeof(rt_scores));
     char *dir = SDL_GetPrefPath("doomedl", app);
     if (!dir) return;
@@ -392,7 +392,7 @@ static void rt_scores_load(const char *app, const RtScore *defaults) {
     }
     fclose(f);
 }
-static void rt_scores_save(void) {
+static inline void rt_scores_save(void) {
     if (!rt_score_path[0]) return;
     FILE *f = fopen(rt_score_path, "w");
     if (!f) return;
@@ -400,12 +400,12 @@ static void rt_scores_save(void) {
         fprintf(f, "%s %d %d\n", rt_scores[i].name, rt_scores[i].score, rt_scores[i].level);
     fclose(f);
 }
-static int rt_score_rank(int score) {
+static inline int rt_score_rank(int score) {
     for (int i = 0; i < RT_NSCORES; i++)
         if (score > rt_scores[i].score) return i;
     return -1;
 }
-static void rt_score_insert(int rank, const char *name, int score, int level) {
+static inline void rt_score_insert(int rank, const char *name, int score, int level) {
     if (rank < 0 || rank >= RT_NSCORES) return;
     memmove(&rt_scores[rank + 1], &rt_scores[rank], sizeof(RtScore) * (size_t)(RT_NSCORES - 1 - rank));
     RtScore s = {{0}, score, level};
@@ -415,7 +415,7 @@ static void rt_score_insert(int rank, const char *name, int score, int level) {
 
 /* tiny deterministic RNG */
 static Uint32 rt_seed = 12345;
-static Uint32 rt_rand(void) { rt_seed = rt_seed * 1664525u + 1013904223u; return rt_seed >> 8; }
-static float rt_randf(void) { return (float)(rt_rand() & 0xFFFF) / 65535.0f; }
+static inline Uint32 rt_rand(void) { rt_seed = rt_seed * 1664525u + 1013904223u; return rt_seed >> 8; }
+static inline float rt_randf(void) { return (float)(rt_rand() & 0xFFFF) / 65535.0f; }
 
 #endif

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Nova Lancer
+Comment=Four stages, four bosses: a CGA-style vertical shoot-'em-up
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;ArcadeGame;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Ember Isle
+Comment=Light the seven beacons of a small 3D island, early-90s style
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;ActionGame;

@@ -10,3 +10,6 @@ Original games in the style of late-80s and early-90s PC games. They share `comm
 | Game | Style |
 |---|---|
 | [Relic Runner](relic-runner/) | EGA side-scrolling platformer: Sunstones, vault doors, jetpack, pistol |
+| [Ember Isle](ember-isle/) | Open-world 3D in software-rendered, dithered 256-colour polygons |
+| [Nova Lancer](nova-lancer/) | CGA 4-colour vertical shoot-'em-up |
+| [Deep Delve](deep-delve/) | 40-column EGA text-mode roguelike |

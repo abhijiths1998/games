@@ -16,6 +16,9 @@ Original games in the style of old DOS titles, sharing one retro toolkit. See [v
 | Game | What it is |
 |---|---|
 | [Relic Runner](vintage/relic-runner/) | EGA platformer: grab each vault's Sunstone, reach the door. Jetpack, pistol, PC-speaker sound, CRT scanlines. |
+| [Ember Isle](vintage/ember-isle/) | Open-world 3D island in early-90s software-rendered polygons. Gather embers, light seven beacons, rekindle the lighthouse as the sun sets. |
+| [Nova Lancer](vintage/nova-lancer/) | 4-colour CGA vertical shoot-'em-up: 4 stages, multi-phase bosses, three weapons, smart bombs. |
+| [Deep Delve](vintage/deep-delve/) | DOS text-mode roguelike: 10 generated depths, unidentified potions and scrolls, a boss guarding the Hollow Star. |
 
 ## Build
 
