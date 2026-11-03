@@ -1,4 +1,4 @@
-GAMES := bramble-bound orbit-golf prism-smash lumen-drift
+GAMES := bramble-bound orbit-golf prism-smash lumen-drift vintage/relic-runner
 
 all:
 	@for g in $(GAMES); do $(MAKE) -C $$g || exit 1; done

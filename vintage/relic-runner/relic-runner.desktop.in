@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Relic Runner
+Comment=Grab the Sunstone, reach the vault door: an EGA-style platformer
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;ActionGame;
