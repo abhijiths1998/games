@@ -29,6 +29,7 @@
 #include "world.c"
 #include "actors.c"
 #include "game.c"
+#include "models.c"
 
 /* ================================================================== scene assembly */
 static Mat paint(v3 c) { Mat m = {c, PAT_PAINT, 0.45f, 0.32f, {0, 0, 0}, 0}; return m; }

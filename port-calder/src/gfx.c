@@ -491,7 +491,9 @@ static Mesh mk_cone(int n) { /* radius 0.5 at y=0, apex at y=1 */
 }
 
 /* ================================================================== instanced renderer */
-enum { MS_CUBE, MS_WEDGE, MS_CYL, MS_CYL8, MS_SPHERE, MS_BLOB, MS_TORUS, MS_PYR, MS_GABLE, MS_CONE, MS_GROUND, MS_OCEAN, MS_N };
+enum { MS_CUBE, MS_WEDGE, MS_CYL, MS_CYL8, MS_SPHERE, MS_BLOB, MS_TORUS, MS_PYR, MS_GABLE, MS_CONE, MS_GROUND, MS_OCEAN,
+       MS_X0, MS_XN = MS_X0 + 24, /* slots filled by models.c (vehicle and character meshes) */
+       MS_N = MS_XN };
 static Mesh MESH[MS_N];
 /* material: base color, shader pattern, metal, roughness, emission, nightOnly (emission scaled by darkness) */
 typedef struct { v3 base; int pat; float metal, rough; v3 emis; float night; } Mat;
@@ -715,6 +717,7 @@ static void make_font(void) {
 
 static Mesh mk_ground(void);
 static Mesh mk_ocean(void);
+static void models_init(void);
 static void init_gl(void) {
     P_LIT = program(VS_LIT, FS_LIT, true);
     P_DEPTH = program(VS_DEPTH, FS_DEPTH, false);
@@ -736,6 +739,7 @@ static void init_gl(void) {
     MESH[MS_CONE] = mk_cone(9);
     MESH[MS_GROUND] = mk_ground();
     MESH[MS_OCEAN] = mk_ocean();
+    models_init();
     for (int i = 0; i < MS_N; i++) {
         glGenVertexArrays(1, &vao_s[i]);
         glGenVertexArrays(1, &vao_d[i]);
