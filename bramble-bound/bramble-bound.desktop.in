@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Bramble Bound
+Comment=Hop through four worlds as Bramble the fox
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;ActionGame;

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Orbit Golf
+Comment=Gravity mini-golf in space
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;SportsGame;

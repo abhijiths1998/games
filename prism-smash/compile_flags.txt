@@ -1,0 +1,4 @@
+-I/usr/include/SDL2
+-D_GNU_SOURCE=1
+-D_REENTRANT
+-std=gnu11

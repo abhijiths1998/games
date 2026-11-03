@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Lumen Drift
+Comment=Keep your light alive in a cavern full of shadows
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;ArcadeGame;

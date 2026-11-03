@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Prism Smash
+Comment=Neon brick-breaker with power-ups and chain reactions
+Exec=@BIN@
+Icon=applications-games
+Terminal=false
+Categories=Game;ArcadeGame;
