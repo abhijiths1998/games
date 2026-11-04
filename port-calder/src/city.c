@@ -1397,67 +1397,112 @@ static void build_world(void) {
 }
 
 /* the map picture shown on the minimap and the full-screen map */
-#define MAPTW 512
-#define MAPTH 620
 static GLuint tex_map;
+#define MAPTW 1024
+#define MAPTH 1240
 static void build_map_texture(void) {
     unsigned char *px = malloc(MAPTW * MAPTH * 4);
+    unsigned char *wet = malloc(MAPTW * MAPTH);
+    const float sx = (WX1 - WX0) / MAPTW, sz = (WZ1 - WZ0) / MAPTH;
+    v3 L = norm(V(-0.55f, 0.75f, -0.45f)); /* light from the north-west, as on printed relief maps */
     for (int y = 0; y < MAPTH; y++)
         for (int x = 0; x < MAPTW; x++) {
-            float wx = WX0 + (x + 0.5f) / MAPTW * (WX1 - WX0), wz = WZ0 + (y + 0.5f) / MAPTH * (WZ1 - WZ0);
+            float wx = WX0 + (x + 0.5f) * sx, wz = WZ0 + (y + 0.5f) * sz;
             float h = terrain_h(wx, wz);
             v3 c;
             float wl = water_level_at(wx, wz);
-            if (h < wl - 0.2f) { float dpt = clampf((wl - h) / 12, 0, 1); c = lerp3(V(0.16f, 0.36f, 0.48f), V(0.05f, 0.14f, 0.26f), dpt); }
-            else {
+            bool w = h < wl - 0.2f;
+            wet[y * MAPTW + x] = w;
+            if (w) {
+                float dpt = clampf((wl - h) / 18, 0, 1);
+                c = lerp3(V(0.36f, 0.62f, 0.70f), V(0.07f, 0.19f, 0.33f), sqrtf(dpt));
+                c = mul(c, 0.96f + 0.08f * fbm2(wx / 90, wz / 90, 3, 41));
+            } else {
                 float a, f, fo, sp;
                 biome_at(wx, wz, &a, &f, &fo, &sp);
-                c = lerp3(V(0.30f, 0.45f, 0.22f), V(0.62f, 0.55f, 0.35f), smooth01(0.3f, 0.7f, a));
-                c = lerp3(c, V(0.80f, 0.70f, 0.50f), smooth01(0.8f, 0.95f, a));
-                c = lerp3(c, V(0.20f, 0.34f, 0.16f), fo * 0.8f);
-                c = lerp3(c, V(0.50f, 0.55f, 0.28f), f * 0.7f);
-                if (sp > 0.4f && sp < 0.6f) c = V(0.88f, 0.86f, 0.80f);
-                if (h > 270) c = lerp3(c, V(0.92f, 0.94f, 0.96f), smooth01(270, 320, h));
-                if (h < wl + 2) c = lerp3(c, V(0.85f, 0.78f, 0.58f), 0.6f);
-                /* hill shading */
-                float hx = terrain_h(wx + 20, wz) - h, hz = terrain_h(wx, wz + 20) - h;
-                float shade = clampf(1 - (hx + hz) * 0.02f, 0.6f, 1.3f);
-                c = mul(c, shade);
+                float m = fbm2(wx / 400, wz / 400, 4, 23);
+                c = lerp3(V(0.30f, 0.45f, 0.24f), V(0.40f, 0.50f, 0.28f), m);
+                c = lerp3(c, V(0.70f, 0.62f, 0.40f), smooth01(0.3f, 0.66f, a));
+                c = lerp3(c, V(0.86f, 0.76f, 0.57f), smooth01(0.78f, 0.94f, a));
+                c = lerp3(c, mul(V(0.18f, 0.33f, 0.19f), 0.85f + 0.3f * fbm2(wx / 60, wz / 60, 3, 7)), fo * 0.85f);
+                if (f > 0.02f) {
+                    float wxp = wx + (fbm2(wx / 400, wz / 400, 3, 3) - 0.5f) * 140, wzp = wz + (fbm2(wx / 400, wz / 400, 3, 8) - 0.5f) * 140;
+                    float hc = hash2f((int)floorf(wxp / 230), (int)floorf(wzp / 230), 61);
+                    v3 crop = hc < 0.3f ? V(0.40f, 0.56f, 0.26f) : hc < 0.55f ? V(0.76f, 0.68f, 0.42f) : hc < 0.75f ? V(0.58f, 0.46f, 0.32f) : V(0.50f, 0.62f, 0.30f);
+                    c = lerp3(c, crop, f * 0.8f);
+                }
+                if (sp > 0.1f && sp < 0.4f) c = lerp3(c, V(0.46f, 0.50f, 0.28f), 0.6f);
+                if (sp > 0.4f && sp < 0.6f) c = V(0.93f, 0.91f, 0.86f);
+                if (sp > 0.6f) c = lerp3(c, V(0.90f, 0.78f, 0.58f), 0.8f);
+                /* altitude: rock on high ground, snow on the peaks */
+                c = lerp3(c, V(0.56f, 0.53f, 0.50f), smooth01(180, 260, h) * 0.7f);
+                c = lerp3(c, V(0.95f, 0.96f, 0.98f), smooth01(265, 315, h + (m - 0.5f) * 40));
+                float bw = 1 - smooth01(0.5f, 3.5f, h - wl);
+                c = lerp3(c, V(0.88f, 0.81f, 0.62f), bw * 0.7f);
+                /* relief shading */
+                float e = 10;
+                float hx = terrain_h(wx + e, wz) - terrain_h(wx - e, wz), hz = terrain_h(wx, wz + e) - terrain_h(wx, wz - e);
+                v3 n = norm(V(-hx * 1.6f, 2 * e, -hz * 1.6f));
+                float sh = (dot(n, L) - L.y) * 1.5f + 1.0f;
+                c = mul(c, clampf(sh, 0.55f, 1.35f));
                 int ci = city_at(wx, wz, -9);
                 if (ci >= 0) {
                     City *C = &cities[ci];
                     int bi = (int)((wx - C->x0) / PITCH), bj = (int)((wz - C->z0) / PITCH);
-                    c = mul(dcolor[block_dist(ci, bi < C->nx ? bi : C->nx - 1, bj < C->nz ? bj : C->nz - 1)], 0.9f);
+                    v3 dc = dcolor[block_dist(ci, bi < C->nx ? bi : C->nx - 1, bj < C->nz ? bj : C->nz - 1)];
+                    float bx = fmodf(wx - C->x0, PITCH), bz = fmodf(wz - C->z0, PITCH);
+                    bool kerb = bx < 9 || bz < 9 || bx > PITCH - 9 || bz > PITCH - 9;
+                    c = mul(lerp3(dc, V(0.80f, 0.80f, 0.78f), 0.25f), kerb ? 0.8f : 0.95f);
                 }
             }
             unsigned char *o = px + (y * MAPTW + x) * 4;
             o[0] = (unsigned char)(clampf(c.x, 0, 1) * 255); o[1] = (unsigned char)(clampf(c.y, 0, 1) * 255); o[2] = (unsigned char)(clampf(c.z, 0, 1) * 255); o[3] = 255;
         }
-    /* roads drawn on top */
-    for (int e = 0; e < nedge; e++) {
-        v3 a = nodes[edges[e].a].p, b = nodes[edges[e].b].p;
-        bool hw = edges[e].hwy >= 0;
-        int steps = (int)(edges[e].len / 4) + 1;
-        for (int k = 0; k <= steps; k++) {
-            v3 p = lerp3(a, b, (float)k / steps);
-            int x = (int)((p.x - WX0) / (WX1 - WX0) * MAPTW), y = (int)((p.z - WZ0) / (WZ1 - WZ0) * MAPTH);
-            for (int dy = 0; dy <= (hw ? 1 : 0); dy++)
-                for (int dx = 0; dx <= (hw ? 1 : 0); dx++) {
-                    int xx = x + dx, yy = y + dy;
-                    if (xx < 0 || yy < 0 || xx >= MAPTW || yy >= MAPTH) continue;
-                    unsigned char *o = px + (yy * MAPTW + xx) * 4;
-                    if (hw) { o[0] = 240; o[1] = 196; o[2] = 70; }
-                    else { o[0] = 70; o[1] = 70; o[2] = 76; }
-                }
+    /* coastlines and lake shores */
+    for (int y = 1; y < MAPTH - 1; y++)
+        for (int x = 1; x < MAPTW - 1; x++) {
+            int i = y * MAPTW + x;
+            if (wet[i]) continue;
+            if (wet[i - 1] || wet[i + 1] || wet[i - MAPTW] || wet[i + MAPTW]) {
+                unsigned char *o = px + i * 4;
+                o[0] = (unsigned char)(o[0] * 0.55f); o[1] = (unsigned char)(o[1] * 0.58f); o[2] = (unsigned char)(o[2] * 0.62f);
+            }
         }
-    }
+    free(wet);
+    /* roads drawn on top: highways with a dark casing, streets in grey */
+    for (int pass = 0; pass < 2; pass++)
+        for (int e = 0; e < nedge; e++) {
+            v3 a = nodes[edges[e].a].p, b = nodes[edges[e].b].p;
+            bool hw = edges[e].hwy >= 0;
+            if (!hw && pass == 0) continue;
+            int steps = (int)(edges[e].len / 2) + 1;
+            int r = hw ? (pass == 0 ? 2 : 1) : 0;
+            for (int k = 0; k <= steps; k++) {
+                v3 p = lerp3(a, b, (float)k / steps);
+                int x = (int)((p.x - WX0) / sx), y = (int)((p.z - WZ0) / sz);
+                for (int dy = -r; dy <= r; dy++)
+                    for (int dx = -r; dx <= r; dx++) {
+                        int xx = x + dx, yy = y + dy;
+                        if (xx < 0 || yy < 0 || xx >= MAPTW || yy >= MAPTH) continue;
+                        if (hw && pass == 1 && dx * dx + dy * dy > 1) continue;
+                        unsigned char *o = px + (yy * MAPTW + xx) * 4;
+                        if (hw && pass == 0) { o[0] = 70; o[1] = 46; o[2] = 20; }
+                        else if (hw) { o[0] = 250; o[1] = 200; o[2] = 72; }
+                        else { o[0] = 236; o[1] = 234; o[2] = 228; }
+                    }
+            }
+        }
     glGenTextures(1, &tex_map);
     glBindTexture(GL_TEXTURE_2D, tex_map);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, MAPTW, MAPTH, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    /* outside California: open ocean to the west, blank beyond the borders */
+    float border[4] = {0.07f, 0.13f, 0.20f, 1};
+    glTexParameterfv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, border);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     free(px);
 }
 static GLuint tex_biome;

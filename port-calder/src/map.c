@@ -712,21 +712,22 @@ static int district_at(v3 p) {
 static unsigned char *biome;
 static void biome_at(float x, float z, float *arid, float *farm, float *forest, float *special) {
     float h = base_height(x, z);
-    *arid = 0.55f; *farm = 0; *forest = 0; *special = 0;
-    if (z < 2800) *arid = 0.2f;
-    else if (z < 4600) *arid = 0.5f;
-    else if (z < 7000) *arid = 0.62f;
-    else *arid = 0.58f;
-    if (x > 4600 && z > 5000) *arid = 0.95f;
-    if (x > 5600 && z > 7400) *arid = 0.97f;
-    if (x < 1700 && z < 2800) *arid = 0.15f;
+    *farm = 0; *forest = 0; *special = 0;
+    /* climate blends smoothly: wet north coast, golden middle, desert south-east, with noisy borders */
+    float wob = (fbm2(x / 700, z / 700, 4, 77) - 0.5f) * 500;
+    float zz = z + wob, xx = x + (fbm2(x / 650, z / 650, 4, 91) - 0.5f) * 500;
+    float a = 0.2f + 0.3f * smooth01(2300, 3300, zz) + 0.12f * smooth01(4100, 5100, zz) - 0.04f * smooth01(6600, 7400, zz);
+    a = lerpf(a, 0.95f, smooth01(4250, 4950, xx) * smooth01(4550, 5450, zz));
+    a = lerpf(a, 0.97f, smooth01(5300, 5900, xx) * smooth01(7100, 7700, zz));
+    a = lerpf(a, 0.15f, (1 - smooth01(1400, 2000, xx)) * (1 - smooth01(2500, 3100, zz)));
+    *arid = clampf(a + (fbm2(x / 260, z / 260, 3, 13) - 0.5f) * 0.12f, 0, 1);
     float sd = poly_dist(x, z, R_SIERRA, NP(R_SIERRA), false);
     if (sd < 500 && h > 60) { *arid = fminf(*arid, 0.3f); *forest = smooth01(60, 140, h) * (1 - smooth01(280, 340, h)); }
     if (x < 1600 && z < 2700 && h > 10) *forest = fmaxf(*forest, 0.85f);
     if (sqrtf((x - SHASTA.x) * (x - SHASTA.x) + (z - SHASTA.z) * (z - SHASTA.z)) < 600) *forest = fmaxf(*forest, 0.7f * (1 - smooth01(250, 330, h)));
     float vd = poly_dist(x, z, V_CENTRAL, NP(V_CENTRAL), false);
     if (vd < 520 && city_at(x, z, 120) < 0) *farm = 1 - smooth01(360, 520, vd);
-    if (x > 1850 && x < 2400 && z > 2650 && z < 3200 && city_at(x, z, 40) < 0) *special = 0.25f; /* Napa vineyards */
+    { float nx = (x - 2125) / 300, nz = (z - 2925) / 320; if (nx * nx + nz * nz < 0.75f + fbm2(x / 150, z / 150, 3, 5) * 0.5f && city_at(x, z, 40) < 0) *special = 0.25f; } /* Napa vineyards */
     float dv = ((x - 5720) / 160) * ((x - 5720) / 160) + ((z - 5300) / 450) * ((z - 5300) / 450);
     if (dv < 1) *special = 0.5f; /* salt flats */
     if (x > 6800 && z > 8200 && z < 9000) *special = 0.75f; /* dunes */

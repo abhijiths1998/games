@@ -111,6 +111,7 @@ static v3 m4_point(m4 a, v3 p) {
     "float vnoise(vec3 p){vec3 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);\n"                           \
     " return mix(mix(mix(hash13(i),hash13(i+vec3(1,0,0)),f.x),mix(hash13(i+vec3(0,1,0)),hash13(i+vec3(1,1,0)),f.x),f.y),\n" \
     "            mix(mix(hash13(i+vec3(0,0,1)),hash13(i+vec3(1,0,1)),f.x),mix(hash13(i+vec3(0,1,1)),hash13(i+vec3(1,1,1)),f.x),f.y),f.z);}\n" \
+    "float fbmn(vec2 p){float a=0.5,t=0.0; for(int i=0;i<4;i++){t+=a*vnoise(vec3(p,float(i)*7.31)); p=mat2(1.6,1.2,-1.2,1.6)*p; a*=0.5;} return t/0.9375;}\n" \
     "uniform vec3 uSunDir; uniform float uNight, uRain, uTime;\n"                                      \
     "vec3 skyBase(vec3 d){\n"                                                                          \
     " float h=d.y, sh=uSunDir.y; float day=smoothstep(-0.16,0.14,sh); float dusk=exp(-pow(sh*4.0,2.0));\n" \
@@ -131,12 +132,26 @@ static v3 m4_point(m4 a, v3 p) {
     " c+=vec3(0.75,0.8,0.9)*smoothstep(0.99955,0.9997,m)*3.0*(1.0-day)*(1.0-uRain);\n"                  \
     " vec3 p=d*300.0; vec3 id=floor(p); float r=hash13(id);\n"                                        \
     " if(r>0.997&&h>0.03){float k=smoothstep(0.45,0.0,length(fract(p)-0.5)); c+=vec3(0.9,0.95,1.0)*k*(r-0.997)*700.0*(1.0-day)*(1.0-uRain)*clamp(h*4.0,0.0,1.0);}\n" \
-    " if(h>0.0){ vec2 uv=d.xz/(h+0.06)*0.9+vec2(uTime*0.004,uTime*0.002);\n"                          \
-    "  float n=vnoise(vec3(uv*1.3,1.0))*0.55+vnoise(vec3(uv*3.1,2.0))*0.3+vnoise(vec3(uv*7.3,3.0))*0.15;\n" \
-    "  float cov=mix(0.58,0.30,uRain); float cl=smoothstep(cov,cov+0.25,n)*smoothstep(0.0,0.15,h);\n" \
-    "  vec3 lit=mix(vec3(0.05,0.045,0.05)+vec3(0.10,0.05,0.025)*uNight,vec3(1.0,0.97,0.95),day);\n"   \
-    "  lit=mix(lit,vec3(1.0,0.55,0.35),exp(-pow(uSunDir.y*4.0,2.0))*0.6*day);\n"                      \
-    "  lit*=mix(1.0,0.45,uRain)*(0.75+0.25*pow(max(s,0.0),3.0)); c=mix(c,lit*1.2,cl*0.9); }\n"      \
+    " if(h>0.0){ vec2 uv=d.xz/(h+0.08)*0.8+vec2(uTime*0.004,uTime*0.002);\n" \
+    "  vec2 w=vec2(fbmn(uv*0.7+3.0),fbmn(uv*0.7+9.0))-0.5; float n=fbmn(uv*1.2+w*1.6);\n" \
+    "  float cov=mix(0.56,0.30,uRain); float cl=smoothstep(cov,cov+0.22,n)*smoothstep(0.0,0.12,h);\n" \
+    "  vec2 sdir=normalize(uSunDir.xz+1e-4)*0.25; float lightn=fbmn(uv*1.2+w*1.6+sdir); float thick=clamp((lightn-n)*4.0+0.5,0.0,1.0);\n" \
+    "  vec3 lit=mix(vec3(0.05,0.045,0.05)+vec3(0.10,0.05,0.025)*uNight,vec3(1.0,0.97,0.95),day);\n" \
+    "  vec3 dark=mix(vec3(0.03,0.03,0.04),vec3(0.55,0.60,0.70),day);\n" \
+    "  lit=mix(lit,vec3(1.0,0.55,0.35),exp(-pow(uSunDir.y*4.0,2.0))*0.6*day);\n" \
+    "  vec3 cc=mix(lit,dark,(1.0-thick)*0.6+smoothstep(cov+0.1,cov+0.5,n)*0.25);\n" \
+    "  cc+=vec3(1.0,0.85,0.6)*pow(max(s,0.0),12.0)*(1.0-cl)*0.8*day;\n" \
+    "  cc*=mix(1.0,0.45,uRain)*(0.8+0.2*pow(max(s,0.0),3.0));\n" \
+    "  vec2 cu=d.xz/(h+0.03)*0.35+vec2(uTime*0.002,0.0); float ci=fbmn(vec2(cu.x*0.6,cu.y*3.0)+fbmn(cu*2.0)); ci=smoothstep(0.55,0.8,ci)*smoothstep(0.02,0.3,h)*(1.0-uRain);\n" \
+    "  c=mix(c,mix(lit,c,0.35)*1.15,ci*0.45);\n" \
+    "  c=mix(c,cc*1.2,cl*0.92*smoothstep(0.0,0.05,h)); }\n" \
+    " float az=atan(d.z,d.x); float inland=smoothstep(-0.35,0.25,d.x*0.85-d.z*0.5);\n" \
+    " float r1=0.010+0.030*fbmn(vec2(az*3.0,1.0))+0.006*vnoise(vec3(az*40.0,0.0,0.0));\n" \
+    " float r2=0.004+0.016*fbmn(vec2(az*5.0,7.0))+0.004*vnoise(vec3(az*70.0,3.0,0.0));\n" \
+    " vec3 hz=skyBase(vec3(d.x,0.0,d.z)); vec3 m1=mix(hz,vec3(0.30,0.36,0.48)*(0.25+0.75*day),0.30); vec3 m2=mix(hz,vec3(0.22,0.27,0.34)*(0.2+0.8*day),0.48);\n" \
+    " float snowcap=smoothstep(r1-0.006,r1-0.001,h)*step(0.032,r1)*day; m1=mix(m1,hz*1.15,snowcap*0.6);\n" \
+    " if(h>-0.02){ c=mix(c,m1,inland*(1.0-uRain*0.7)*smoothstep(r1+0.0015,r1,h));\n" \
+    "  c=mix(c,m2,inland*(1.0-uRain*0.7)*smoothstep(r2+0.0015,r2,h)); }\n" \
     " return c;}\n"
 
 /* every lit object is an instance: model matrix + base(rgb,pattern) + mat(metal,rough,seed,nightEmis) + emis */
@@ -171,26 +186,61 @@ static const char *FS_LIT =
     " return mix(sum/9.0,1.0,e);}\n"
     "uniform sampler2D uBiome; uniform vec2 uMapMin, uMapSize; uniform float uSnow;\n"
     /* the land: biomes from a low-res map, rock on slopes, snow on peaks, beaches at the water */
+    "vec3 fields(vec2 q,float dist,out float trk){\n"
+    /* farm parcels of mixed size: big blocks split into strips, gently warped edges, rows in varying directions */
+    "  vec2 fq=q+(vec2(fbmn(q*0.0025),fbmn(q*0.0025+5.0))-0.5)*140.0; float B=230.0;\n"
+    "  vec2 big=floor(fq/B), fb=fract(fq/B); float hb=hash12(big); bool ax=hash12(big+3.1)>0.5;\n"
+    "  float ns=1.0+floor(hb*3.99); float co=ax?fb.x:fb.y; float sid=floor(co*ns), sf=fract(co*ns);\n"
+    "  vec2 cell=big*7.0+vec2(sid,ax?1.0:2.0); float hc=hash12(cell), hr=hash12(cell+11.0);\n"
+    "  float edge=min(min(min(fb.x,1.0-fb.x),min(fb.y,1.0-fb.y))*B,min(sf,1.0-sf)*B/ns);\n"
+    "  vec2 rd=hr<0.4?vec2(1.0,0.0):hr<0.8?vec2(0.0,1.0):vec2(0.7071,0.7071); float rf=1.8+hash12(cell+4.0)*1.6;\n"
+    "  float rows=0.5+0.5*sin(dot(q,rd)*rf); rows=mix(rows,0.5,smoothstep(60.0,220.0,dist));\n"
+    "  float moist=fbmn(q*0.03+hc*20.0);\n"
+    "  vec3 crop;\n"
+    "  if(hc<0.22) crop=mix(vec3(0.13,0.26,0.05),vec3(0.20,0.33,0.07),moist)*(0.78+0.32*rows);\n"        /* row crops */
+    "  else if(hc<0.40) crop=mix(vec3(0.62,0.52,0.24),vec3(0.52,0.42,0.18),moist)*(0.9+0.15*rows);\n"    /* wheat */
+    "  else if(hc<0.55) crop=mix(vec3(0.36,0.25,0.15),vec3(0.27,0.19,0.12),moist)*(0.78+0.3*rows);\n"    /* ploughed */
+    "  else if(hc<0.70) crop=mix(vec3(0.22,0.38,0.08),vec3(0.30,0.44,0.12),moist);\n"                    /* alfalfa */
+    "  else if(hc<0.82) crop=mix(vec3(0.46,0.40,0.26),vec3(0.38,0.34,0.22),moist);\n"                    /* fallow */
+    "  else { vec2 t=fract(q/7.0)-0.5; float tree=smoothstep(0.32,0.22,length(t)); crop=mix(vec3(0.33,0.30,0.18),vec3(0.08,0.15,0.04),tree*smoothstep(260.0,90.0,dist)+0.35*smoothstep(90.0,260.0,dist)); }\n" /* orchard */
+    "  if(hash12(big+9.0)>0.86){ float r=length(fb-0.5)*B; crop=mix(crop,mix(vec3(0.16,0.32,0.06),vec3(0.24,0.38,0.09),moist)*(0.9+0.1*sin(r*1.4)),smoothstep(B*0.47,B*0.45,r)); }\n" /* centre pivots */
+    "  trk=smoothstep(3.5,1.5,edge); return crop; }\n"
     "void terrain(inout vec3 alb,inout float rough,inout float met,vec3 N){\n"
-    " vec2 q=vPos.xz; float h=vPos.y; vec4 b=texture(uBiome,(q-uMapMin)/uMapSize);\n"
-    " float n1=vnoise(vec3(q*0.9,0.0)), n2=vnoise(vec3(q*0.05,3.0)), n3=vnoise(vec3(q*0.013,7.0)), n4=vnoise(vec3(q*0.25,5.0));\n"
-    " vec3 green=vec3(0.10,0.19,0.05), golden=vec3(0.50,0.40,0.19), desert=vec3(0.66,0.52,0.36), forest=vec3(0.06,0.10,0.04), sand=vec3(0.70,0.60,0.43);\n"
-    " float ar=b.r+(n2-0.5)*0.25+(n4-0.5)*0.08;\n"
-    " vec3 g=mix(green,golden,smoothstep(0.3,0.62,ar)); g=mix(g,desert,smoothstep(0.78,0.92,ar));\n"
-    " g=mix(g,forest,clamp(b.b*0.9+(n4-0.5)*0.3,0.0,1.0));\n"
-    " if(b.g>0.03){ vec2 cell=floor(q/90.0); float hc=hash12(cell); vec2 f=fract(q/90.0); float rw=hash12(cell+7.0)>0.5?q.x:q.y; float rows=0.5+0.5*sin(rw*2.4);\n"
-    "  vec3 crop=hc<0.3?vec3(0.15,0.28,0.06)*(0.75+0.35*rows):hc<0.55?vec3(0.58,0.49,0.22)*(0.85+0.2*rows):hc<0.75?vec3(0.34,0.24,0.14)*(0.8+0.25*rows):vec3(0.24,0.36,0.10)*(0.85+0.2*rows);\n"
-    "  crop=mix(crop,vec3(0.32,0.28,0.2),smoothstep(0.47,0.5,max(abs(f.x-0.5),abs(f.y-0.5))));\n"
-    "  g=mix(g,crop,smoothstep(0.0,0.5,b.g)); }\n"
-    " if(b.a>0.1&&b.a<0.4){ float rows=smoothstep(0.35,0.65,0.5+0.5*sin(q.y*1.6)); g=mix(g,mix(vec3(0.38,0.30,0.20),vec3(0.16,0.26,0.07),rows),0.8); }\n"
-    " if(b.a>0.4&&b.a<0.6){ g=mix(g,vec3(0.88,0.86,0.80)*(0.92+0.1*n1),0.85); }\n"
-    " if(b.a>0.6){ g=mix(g,vec3(0.80,0.64,0.44)*(0.85+0.2*sin(q.x*0.12+q.y*0.05+n2*8.0)),0.9); }\n"
-    " alb=g*(0.78+0.35*n1)*(0.85+0.3*n3); rough=0.93; met=0.0;\n"
-    " float slope=1.0-N.y; float rk=smoothstep(0.22,0.42,slope+(n1-0.5)*0.12);\n"
-    " vec3 rc=vec3(0.38,0.35,0.32)*(0.8+0.3*sin(h*1.3+n2*4.0))*(0.8+0.35*n1); if(b.r>0.8) rc*=vec3(1.15,0.95,0.8);\n"
+    " vec2 q=vPos.xz; float h=vPos.y; float dist=length(uCam-vPos);\n"
+    " vec2 wq=q+(vec2(vnoise(vec3(q*0.006,1.0)),vnoise(vec3(q*0.006,9.0)))-0.5)*50.0;\n"
+    " vec4 b=texture(uBiome,(wq-uMapMin)/uMapSize);\n"
+    " float m1=fbmn(q*0.0009), m2=fbmn(q*0.005+3.1), d1=fbmn(q*0.045+1.7);\n"
+    " float n1=vnoise(vec3(q*0.9,0.0)), n3=vnoise(vec3(q*3.3,2.0)), n4=vnoise(vec3(q*0.25,5.0));\n"
+    " float fine=smoothstep(140.0,30.0,dist);\n"
+    " vec3 lush=vec3(0.07,0.17,0.04), green=vec3(0.12,0.21,0.06), golden=vec3(0.47,0.37,0.17), dry=vec3(0.40,0.34,0.21), desert=vec3(0.66,0.52,0.36), forest=vec3(0.05,0.09,0.035), sand=vec3(0.70,0.60,0.43), dirt=vec3(0.31,0.25,0.17);\n"
+    " float ar=b.r+(m1-0.5)*0.35+(m2-0.5)*0.18;\n"
+    " vec3 g=mix(lush,green,m2); g=mix(g,golden,smoothstep(0.3,0.62,ar)); g=mix(g,dry,smoothstep(0.5,0.8,ar)*(1.0-m2)*0.7); g=mix(g,desert,smoothstep(0.78,0.92,ar));\n"
+    " g=mix(g,forest*(0.75+0.5*d1),clamp(b.b*0.95+(m2-0.5)*0.6,0.0,1.0));\n"
+    " float fo=clamp(b.b*0.95+(m2-0.5)*0.6,0.0,1.0); float duff=smoothstep(0.32,0.62,fbmn(q*0.07+2.0)); g=mix(g,vec3(0.14,0.10,0.06)*(0.75+0.5*n4),max(fo,0.45*(1.0-smoothstep(0.2,0.4,ar)))*duff*0.8);\n"
+    " g=mix(g,vec3(0.03,0.06,0.02),fo*smoothstep(0.6,0.8,vnoise(vec3(q*0.4,12.0)))*0.6*fine);\n"
+    /* bare patches, scrub and bushes break up the open ground */
+    " float pt=smoothstep(0.60,0.74,fbmn(q*0.018+7.0)); g=mix(g,mix(dirt,desert,smoothstep(0.6,0.9,ar))*(0.9+0.2*n4),pt*0.55*(1.0-b.b));\n"
+    " vec3 shrub=mix(vec3(0.07,0.12,0.04),vec3(0.20,0.20,0.10),smoothstep(0.75,0.95,ar));\n"
+    " vec2 bc=floor(q/2.6); vec2 bf=fract(q/2.6)-0.5+(vec2(hash12(bc),hash12(bc+5.0))-0.5)*0.5; float bsz=0.18+0.2*hash12(bc+9.0);\n"
+    " float bush=smoothstep(bsz,bsz*0.6,length(bf))*step(hash12(bc+2.0),0.15+0.5*smoothstep(0.35,0.75,d1))*(0.7+0.3*hash12(bc+4.0)); bush=mix(bush,0.06+0.16*smoothstep(0.35,0.75,d1),smoothstep(25.0,90.0,dist)); g=mix(g,shrub,bush*0.75*(1.0-b.b));\n"
+    /* California hills: golden grass facing the sun, dark chaparral and oak on north-facing slopes */
+    " float nface=smoothstep(0.02,0.25,-N.z)*smoothstep(0.08,0.2,1.0-N.y)*smoothstep(0.3,0.5,ar)*(1.0-smoothstep(0.82,0.94,ar));\n"
+    " g=mix(g,vec3(0.08,0.13,0.05)*(0.75+0.5*d1),nface*clamp(0.55+(d1-0.5)*1.2,0.0,0.9)*(1.0-b.b));\n"
+    " float streak=vnoise(vec3(q.x*0.7,q.y*0.18,8.0))*fine; g*=0.92+0.16*streak;\n"
+    " if(b.g>0.03){ float trk; vec3 crop=fields(q,dist,trk); crop=mix(crop,vec3(0.36,0.31,0.22),trk); g=mix(g,crop,smoothstep(0.0,0.5,b.g)); }\n"
+    " if(b.a>0.1&&b.a<0.4){ vec2 vq=q+vec2(0.0,fbmn(q*0.004)*60.0); float rows=smoothstep(0.35,0.65,0.5+0.5*sin(vq.y*1.6)); rows=mix(rows,0.45,smoothstep(80.0,250.0,dist)); g=mix(g,mix(vec3(0.38,0.30,0.20),vec3(0.16,0.26,0.07),rows),0.8); }\n"
+    " if(b.a>0.4&&b.a<0.6){ float cr=smoothstep(0.03,0.0,abs(vnoise(vec3(q*0.12,6.0))-0.5))*fine; g=mix(g,vec3(0.90,0.88,0.82)*(0.92+0.1*n1)*(1.0-0.25*cr),0.85); }\n"
+    " if(b.a>0.6){ float dn=sin(q.x*0.11+q.y*0.045+fbmn(q*0.004)*14.0); g=mix(g,vec3(0.80,0.64,0.44)*(0.88+0.14*dn+0.05*n1),0.9); }\n"
+    " alb=g*(0.86+0.24*n1*mix(0.5,1.0,fine))*(0.94+0.12*n3*fine)*(0.88+0.24*m2); rough=0.93; met=0.0;\n"
+    /* rock: weathered, warped layers, no regular stripes */
+    " vec3 P=vPos; float rn=vnoise(P*0.07)*0.5+vnoise(P*0.29)*0.3+vnoise(P*1.2)*0.2*fine;\n"
+    " float lay=0.5+0.5*sin(h*0.22+rn*7.0+m2*12.0); float crack=smoothstep(0.02,0.10,abs(vnoise(P*0.45)-0.5));\n"
+    " float slope=1.0-N.y; float rk=smoothstep(0.28,0.50,slope+(rn-0.5)*0.22+b.r*0.06)*(1.0-0.65*smoothstep(0.2,0.7,b.b)*(1.0-smoothstep(0.55,0.75,slope)));\n"
+    " vec3 rc=mix(vec3(0.27,0.26,0.25),vec3(0.50,0.47,0.43),rn)*(0.9+0.14*lay)*(0.72+0.28*crack);\n"
+    " rc=mix(rc,rc*vec3(1.18,0.94,0.76),smoothstep(0.6,0.9,b.r)); rc=mix(rc,rc*vec3(0.92,1.0,0.92),(1.0-smoothstep(0.2,0.5,b.r))*0.6);\n"
     " alb=mix(alb,rc,rk); rough=mix(rough,0.8,rk);\n"
-    " float sn=smoothstep(uSnow-25.0,uSnow+10.0,h+n2*40.0)*smoothstep(0.5,0.75,N.y); alb=mix(alb,vec3(0.90,0.92,0.95),sn); rough=mix(rough,0.45,sn);\n"
-    " float beach=(1.0-smoothstep(1.4,3.2,h-uWater))*step(h,6.0); alb=mix(alb,sand*(0.9+0.2*n1),beach);\n"
+    " float sn=smoothstep(uSnow-25.0,uSnow+10.0,h+(m2-0.5)*60.0+(n4-0.5)*10.0)*smoothstep(0.45,0.75,N.y+(rn-0.5)*0.2); alb=mix(alb,vec3(0.90,0.92,0.95)*(0.94+0.06*n1),sn); rough=mix(rough,0.45,sn);\n"
+    " float beach=(1.0-smoothstep(1.4,3.2,h-uWater+(n4-0.5)*0.8))*step(h,6.0); alb=mix(alb,sand*(0.9+0.15*n1+0.05*n3),beach);\n"
     " if(h<uWater+0.15) alb*=0.6;\n"
     " float wet=uRain*0.6*(0.5+0.5*n4); rough=mix(rough,0.3,wet); alb*=1.0-0.3*wet; }\n"
     /* roads: the vertex 'normal' carries (across, along, type + length/1000) */

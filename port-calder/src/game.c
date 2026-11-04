@@ -1177,8 +1177,53 @@ static void draw_minimap(float t) {
     ny = MAPV.oy + dy / mm * (size / 2 - 8);
     htext("N", nx - 3 * UI * 0.5f, ny - 4 * UI * 0.5f, UI * 0.6f, 1, 1, 1, 0.9f, 0);
 }
+/* the full-map backdrop: a dark chart table with a faint graticule, so the game scene doesn't show through */
+static void draw_map_backdrop(float size) {
+    const int bands = 24;
+    for (int k = 0; k < bands; k++) {
+        float f = (float)k / (bands - 1), y0 = rh * (float)k / bands;
+        float v = 1 - fabsf(f - 0.45f) * 0.8f;
+        hrect(0, y0, (float)rw, rh / (float)bands + 1, 0.035f * v, 0.06f * v, 0.095f * v, 0.96f);
+    }
+    float step = size / 12, x0 = MAPV.ox - size / 2, y0 = MAPV.oy - size / 2;
+    for (float x = fmodf(x0, step); x < rw; x += step) hrect(x, 0, 1, (float)rh, 0.5f, 0.7f, 0.9f, 0.05f);
+    for (float y = fmodf(y0, step); y < rh; y += step) hrect(0, y, (float)rw, 1, 0.5f, 0.7f, 0.9f, 0.05f);
+    /* vignette */
+    for (int k = 0; k < 10; k++) {
+        float w = rw * 0.012f * (k + 1), a = 0.05f;
+        hrect(0, 0, w, (float)rh, 0, 0, 0, a);
+        hrect(rw - w, 0, w, (float)rh, 0, 0, 0, a);
+    }
+    /* drop shadow under the chart */
+    for (int k = 1; k <= 6; k++) hrect(x0 - k + 6, y0 - k + 8, size + 2 * k, size + 2 * k, 0, 0, 0, 0.07f);
+}
+static void draw_map_frame(float size) {
+    float x0 = MAPV.ox - size / 2, y0 = MAPV.oy - size / 2, b = 2 * UI * 0.5f;
+    hrect(x0 - b * 3, y0 - b * 3, size + b * 6, b, 0.80f, 0.68f, 0.42f, 0.9f);
+    hrect(x0 - b * 3, y0 + size + b * 2, size + b * 6, b, 0.80f, 0.68f, 0.42f, 0.9f);
+    hrect(x0 - b * 3, y0 - b * 3, b, size + b * 6, 0.80f, 0.68f, 0.42f, 0.9f);
+    hrect(x0 + size + b * 2, y0 - b * 3, b, size + b * 6, 0.80f, 0.68f, 0.42f, 0.9f);
+    hrect(x0 - b, y0 - b, size + 2 * b, b, 0, 0, 0, 0.85f);
+    hrect(x0 - b, y0 + size, size + 2 * b, b, 0, 0, 0, 0.85f);
+    hrect(x0 - b, y0, b, size, 0, 0, 0, 0.85f);
+    hrect(x0 + size, y0, b, size, 0, 0, 0, 0.85f);
+    /* compass, in the open Pacific */
+    float cx = x0 + size * 0.09f, cy = y0 + size * 0.86f, r = size * 0.04f;
+    for (int k = 0; k < 8; k++) {
+        float L = r * (1 - k / 8.0f);
+        hrect(cx - 1 - k * 0.6f, cy - L, 2 + k * 1.2f, L * (k == 0 ? 1.0f : 0.15f), 0.95f, 0.88f, 0.70f, 0.9f);
+    }
+    hrect(cx - 1, cy, 2, r * 0.8f, 0.6f, 0.65f, 0.7f, 0.8f);
+    hrect(cx - r * 0.8f, cy - 1, r * 1.6f, 2, 0.6f, 0.65f, 0.7f, 0.8f);
+    htext("N", cx, cy - r - 14 * UI * 0.5f, UI * 0.55f, 0.95f, 0.88f, 0.70f, 1, 1);
+    /* scale bar: 1 km of game road */
+    float km = 1000 * MAPV.scale, sx = x0 + size * 0.05f, sy = y0 + size * 0.955f;
+    hrect(sx - 3, sy - 3, km + 6, 9 * UI * 0.5f + 6, 0, 0, 0, 0.45f);
+    hrect(sx, sy, km / 2, 4 * UI * 0.5f, 0.95f, 0.95f, 0.92f, 0.95f);
+    hrect(sx + km / 2, sy, km / 2, 4 * UI * 0.5f, 0.15f, 0.15f, 0.15f, 0.95f);
+    htext("1 KM", sx + km + 8, sy - 3, UI * 0.4f, 0.95f, 0.95f, 0.92f, 0.95f, 0);
+}
 static void draw_full_map(float t) {
-    hrect(0, 0, (float)rw, (float)rh, 0, 0, 0, 0.75f);
     float size = fminf(rw, rh) * 0.86f;
     MAPV.size = size;
     MAPV.ox = rw / 2.0f;
@@ -1186,7 +1231,9 @@ static void draw_full_map(float t) {
     MAPV.c = V((WX0 + WX1) / 2, 0, (WZ0 + WZ1) / 2);
     MAPV.scale = size / (WZ1 - WZ0);
     MAPV.rot = 0;
+    draw_map_backdrop(size);
     draw_map_contents(true, t);
+    draw_map_frame(size);
     htext("CALIFORNIA", rw / 2.0f, MAPV.oy - size / 2 - 22 * UI * 0.5f, UI * 0.9f, 1, 1, 1, 1, 1);
     for (int c = 0; c < NCITY; c++) {
         float x, y;
@@ -1201,6 +1248,8 @@ static void draw_full_map(float t) {
     }
     float lx = MAPV.ox + size / 2 + 12, ly = MAPV.oy - size / 2;
     if (lx + 150 > rw) lx = 10;
+    hrect(lx - 8, ly - 8, 175 * UI * 0.55f, (POI_N + SHOP_N) * 16 * UI * 0.55f + 12, 0.02f, 0.03f, 0.05f, 0.7f);
+    hrect(lx - 8, ly - 8, 2, (POI_N + SHOP_N) * 16 * UI * 0.55f + 12, 0.80f, 0.68f, 0.42f, 0.9f);
     const char *names[] = {"SAFEHOUSE (SAVE)", "POLICE", "HOSPITAL", "RESPRAY $100", "COURIER JOB", "STREET RACE"};
     for (int k = 0; k < POI_N; k++) {
         float yy = ly + k * 16 * UI * 0.55f;
